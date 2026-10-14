@@ -20,12 +20,13 @@ From `composer.json`:
 - The **pcntl** and **posix** extensions (signal handling and process ownership — both are hard
   requirements, not suggestions)
 - Laravel 12 or 13 (`illuminate/contracts: ^12.0||^13.0`)
-- `cboxdk/laravel-queue-metrics: ^3.0` — installed automatically as a dependency
-- A queue backend the metrics package can observe (Redis or database)
+- `cboxdk/laravel-queue-metrics: ^3.4.1` and `cboxdk/system-metrics: ^3.1` — installed automatically
+- A queue backend the metrics package can observe (Redis, database or SQS — see
+  [Running on Amazon SQS](../deployment/amazon-sqs.md))
 - A process supervisor for the manager daemon (Supervisor or systemd)
 
-`cboxdk/system-metrics` is **not** a direct dependency; it arrives transitively through
-`laravel-queue-metrics` and is what `CapacityCalculator` reads CPU and memory from.
+`cboxdk/system-metrics` is a direct dependency. `CapacityCalculator` reads CPU, memory, the cgroup
+working set and the cgroup's OOM kill counter from it.
 
 `cboxdk/laravel-telemetry` is optional (`suggest`). Install it only if you want the OpenTelemetry
 integration described in [Integrations & Developer Hooks](integrations.md).
@@ -341,13 +342,25 @@ QUEUE_AUTOSCALE_SPAWN_LATENCY_TRACKER=auto
 QUEUE_AUTOSCALE_FUSE_ENABLED=true
 QUEUE_AUTOSCALE_FUSE_STORE=auto
 
+# Pickup-time samples
+QUEUE_AUTOSCALE_PICKUP_SAMPLING=true
+QUEUE_AUTOSCALE_PICKUP_SAMPLES_PER_SECOND=100
+QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS=3600
+QUEUE_AUTOSCALE_STAMP_PUSHED_AT=false
+
 # Algorithm tuning
 QUEUE_AUTOSCALE_FALLBACK_JOB_TIME=2.0
+
+# Host limits
+QUEUE_AUTOSCALE_MEMORY_LIMIT_MB=
+QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS=300
+QUEUE_AUTOSCALE_MAX_TOTAL_WORKERS=
 
 # Manager
 QUEUE_AUTOSCALE_LOG_CHANNEL=stack
 QUEUE_AUTOSCALE_RESTART_SCOPE=
 QUEUE_AUTOSCALE_HONOR_QUEUE_RESTART=true
+QUEUE_AUTOSCALE_REAP_ORPHANS_ON_START=true
 
 # Cluster mode
 QUEUE_AUTOSCALE_CLUSTER_ENABLED=false
@@ -362,6 +375,7 @@ QUEUE_AUTOSCALE_DECISION_HISTORY_MAX=10000
 QUEUE_AUTOSCALE_ALERT_COOLDOWN=300
 QUEUE_AUTOSCALE_TELEMETRY_ENABLED=true
 QUEUE_AUTOSCALE_TELEMETRY_CACHE_TTL=10
+QUEUE_AUTOSCALE_TELEMETRY_MAX_QUEUE_LABELS=100
 ```
 
 Plus the metrics package's own variables — at minimum `QUEUE_METRICS_STORAGE` and, for Redis,
@@ -478,9 +492,11 @@ Or tighten the global cap so the autoscaler backs off sooner:
 ],
 ```
 
-`CapacityCalculator` samples CPU for roughly one second per refresh and caches the result for four
-seconds, so an interval below about 5 seconds spends a noticeable share of each cycle sampling.
-Raising `--interval` is the correct lever if the manager itself is expensive.
+`CapacityCalculator` does not sleep to sample CPU. It keeps the previous tick's CPU counters and
+diffs them against the current ones, so usage is measured over the gap between ticks, and the very
+first tick of a process assumes 50%. Readings are cached for four seconds, so evaluating many queues
+in one tick reads the host once. Raising `--interval` is still the correct lever if the manager itself
+is expensive.
 
 ### Memory pressure
 
@@ -491,6 +507,23 @@ lets the autoscaler over-commit the host.
 ```bash
 ps -o rss= -C php --sort=-rss | head
 ```
+
+On Linux the estimate is also floored at what live workers actually peak at (`VmHWM`, boot
+included), so an estimate that is too low corrects itself once workers are running. It cannot
+correct a cold start, so the measured RSS is still the right starting value.
+
+Three more `limits` keys matter under memory pressure:
+
+- `memory_limit_mb` (`QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`) — set it when the manager runs in a
+  container whose limit is set only on a parent cgroup (a Kubernetes pod limit, an ECS task limit),
+  because the process cannot see that limit itself.
+- `worker_settle_seconds` (default `30`) — how long a just-spawned worker is charged the memory it
+  has not grown into yet. Raise it if your workers take longer than that to reach their footprint.
+- `oom_backoff_seconds` (default `300`, `QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS`) — how long worker
+  capacity is held after the kernel OOM-kills processes in the cgroup.
+
+See [Resource Constraints](../algorithms/resource-constraints.md) for the arithmetic and
+[Kubernetes and Amazon ECS](../deployment/kubernetes-ecs.md) for container limits.
 
 ### Flapping
 
@@ -551,6 +584,7 @@ worker. In addition, `RestartSignal` watches the `illuminate:queue:restart` cach
 - [ ] `config/queue-autoscale.php` published, profiles chosen per queue
 - [ ] `workers.max` set deliberately for every queue that matters
 - [ ] `limits.worker_memory_mb_estimate` matched to measured worker RSS
+- [ ] In a container limited only at the pod or task level, `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB` set
 - [ ] Supervisor/systemd unit deployed with group stop and `stopwaitsecs` > shutdown timeout
 - [ ] `--interval` set on the command line
 - [ ] Log channel routed somewhere you actually read

@@ -440,15 +440,58 @@ Caps are under the top-level `limits` key:
 
 ```php
 'limits' => [
-    'max_cpu_percent' => 85,           // Skip spawning when host CPU ≥ this
-    'max_memory_percent' => 85,        // Skip spawning when host memory ≥ this
+    'max_cpu_percent' => 85,            // Skip spawning when host CPU ≥ this
+    'max_memory_percent' => 85,         // Ceiling on the governing memory limit (see below)
     'worker_memory_mb_estimate' => 128, // Assumed memory footprint per worker
     'worker_cpu_core_estimate' => 0.2,  // Baseline CPU cores per worker (fallback)
     'reserve_cpu_cores' => 0.2,         // Cores reserved for the OS/other services
+    'memory_limit_mb' => env('QUEUE_AUTOSCALE_MEMORY_LIMIT_MB'),            // null = detect
+    'worker_settle_seconds' => 30,      // How long a new worker is charged memory it has not grown into
+    'oom_backoff_seconds' => env('QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS', 300), // 0 disables
+    'max_total_workers' => env('QUEUE_AUTOSCALE_MAX_TOTAL_WORKERS'),         // null = no ceiling
 ],
 ```
 
 These apply to every queue and group — they are how the package avoids spawning workers that would destabilise the host. See [Resource Constraints](../algorithms/resource-constraints.md) for the math.
+
+| Key | Default | Env var | Change it when |
+|---|---|---|---|
+| `max_cpu_percent` | `85` | — | The host runs other CPU-heavy services, or you want the manager to back off sooner. |
+| `max_memory_percent` | `85` | — | You want more or less slack under the memory limit. It applies to the most specific limit that governs the host: `memory_limit_mb`, else the container's cgroup limit, else the host's total memory. |
+| `worker_memory_mb_estimate` | `128` | — | Your workers' measured RSS is far from 128 MB. It is the cold-start cost per worker until measurements exist. |
+| `worker_cpu_core_estimate` | `0.2` | — | Your jobs are CPU-bound (raise it) or mostly wait on I/O (lower it). |
+| `reserve_cpu_cores` | `0.2` | — | Other processes on the host need guaranteed CPU. |
+| `memory_limit_mb` | `null` | `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB` | The manager runs in a container whose memory limit is set only on a parent cgroup, such as a Kubernetes pod-level limit or an Amazon ECS task-level limit, so the process cannot see it. Leave it unset on a VM, on bare metal, or in a container with its own limit: the limit is detected there. Zero or a non-numeric value counts as unset. |
+| `worker_settle_seconds` | `30` | — | Your workers take longer than 30 seconds to boot to their full footprint (raise it), or boot much faster (lower it). `0` stops charging booting workers. |
+| `oom_backoff_seconds` | `300` | `QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS` | You want a shorter or longer hold on worker capacity after the kernel OOM-kills processes in the manager's cgroup. `0` disables the hold. It only works where the cgroup reports an OOM kill counter (Linux cgroup v2, and cgroup v1 with `cboxdk/system-metrics` 3.1 or later). |
+| `max_total_workers` | `null` | `QUEUE_AUTOSCALE_MAX_TOTAL_WORKERS` | Queues are matched by pattern or discovered from metrics, so nothing else bounds how many queues raise their `workers.min`. |
+
+On Linux, the per-worker memory estimate is also floored at what the queue's live workers actually peak at, so a `worker_memory_mb_estimate` that is too low corrects itself once workers are running. See [Per-worker estimates](../algorithms/resource-constraints.md#per-worker-estimates).
+
+### Pickup-time measurement (global)
+
+```php
+'pickup_time' => [
+    'store' => env('QUEUE_AUTOSCALE_PICKUP_TIME_STORE', 'auto'),
+    'percentile_calculator' => SortBasedPercentileCalculator::class,
+    'max_samples_per_queue' => 1000,
+    'sampling' => [
+        'enabled' => env('QUEUE_AUTOSCALE_PICKUP_SAMPLING', true),
+        'max_per_second' => env('QUEUE_AUTOSCALE_PICKUP_SAMPLES_PER_SECOND', 100),
+    ],
+    'max_sample_seconds' => env('QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS', 3600),
+    'stamp_pushed_at' => env('QUEUE_AUTOSCALE_STAMP_PUSHED_AT', false),
+],
+```
+
+| Key | Default | Env var | Change it when |
+|---|---|---|---|
+| `store` | `auto` | `QUEUE_AUTOSCALE_PICKUP_TIME_STORE` | Samples are recorded in the worker processes and read by the manager, so they need a shared store. `auto` uses Redis only in cluster mode; set `redis` to get pickup percentiles on a single host. |
+| `max_samples_per_queue` | `1000` | — | You want a longer or shorter sample history per queue. |
+| `sampling.enabled` | `true` | `QUEUE_AUTOSCALE_PICKUP_SAMPLING` | You want every pickup recorded regardless of throughput. |
+| `sampling.max_per_second` | `100` | `QUEUE_AUTOSCALE_PICKUP_SAMPLES_PER_SECOND` | A worker process records more than this many pickups a second and you want more or fewer of them kept. |
+| `max_sample_seconds` | `3600` | `QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS` | Samples longer than this are dropped, so a job re-pushed with `queue:retry` does not count days of waiting. Keep it several times above your largest `sla.target_seconds`; `null` or `0` keeps every sample. |
+| `stamp_pushed_at` | `false` | `QUEUE_AUTOSCALE_STAMP_PUSHED_AT` | You do not run Horizon. Without `pushedAt` in the payload no pickup sample can be taken. See [Where pickup time comes from](#where-pickup-time-comes-from). |
 
 ### Business-hours scheduling
 
@@ -493,7 +536,11 @@ QUEUE_AUTOSCALE_HONOR_QUEUE_RESTART=true
 QUEUE_AUTOSCALE_PICKUP_TIME_STORE=auto
 QUEUE_AUTOSCALE_SPAWN_LATENCY_TRACKER=auto
 
-# Pickup-time samples above this are dropped (seconds; empty keeps all)
+# Pickup-time sampling above this many recorded pickups per second per worker process
+QUEUE_AUTOSCALE_PICKUP_SAMPLING=true
+QUEUE_AUTOSCALE_PICKUP_SAMPLES_PER_SECOND=100
+
+# Pickup-time samples above this are dropped (seconds; empty or 0 keeps all)
 QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS=3600
 
 # Stamp pushedAt on dispatch so pickup time works without Horizon
@@ -509,6 +556,15 @@ QUEUE_AUTOSCALE_FALLBACK_JOB_TIME=2.0
 # (e.g. a pod- or task-level limit only). Leave unset to detect it.
 QUEUE_AUTOSCALE_MEMORY_LIMIT_MB=
 
+# Hold worker capacity this long after the kernel OOM-kills processes (seconds; 0 disables)
+QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS=300
+
+# Hard ceiling on workers this host may run across every queue (empty = no ceiling)
+QUEUE_AUTOSCALE_MAX_TOTAL_WORKERS=
+
+# Terminate queue:work processes a previous manager left behind, on start
+QUEUE_AUTOSCALE_REAP_ORPHANS_ON_START=true
+
 # Alert cooldown for BreachNotificationPolicy / AlertRateLimiter (seconds)
 QUEUE_AUTOSCALE_ALERT_COOLDOWN=300
 
@@ -522,6 +578,7 @@ QUEUE_AUTOSCALE_FUSE_STORE=auto        # auto|cache|null|FQCN
 # Telemetry (no-op unless cboxdk/laravel-telemetry is installed)
 QUEUE_AUTOSCALE_TELEMETRY_ENABLED=true
 QUEUE_AUTOSCALE_TELEMETRY_CACHE_TTL=10
+QUEUE_AUTOSCALE_TELEMETRY_MAX_QUEUE_LABELS=100
 
 # Cluster tuning (only meaningful with cluster mode enabled)
 QUEUE_AUTOSCALE_CLUSTER_HEARTBEAT_TTL=15
@@ -546,6 +603,10 @@ Per-queue SLA targets are **not** env-driven — they live in profile classes or
 ### Where pickup time comes from
 
 A pickup sample is the time between a job becoming available and a worker starting it, measured from the payload's `pushedAt` plus any dispatch delay. Excluding the dispatch delay relies on the `delay` key Laravel writes into the job payload from Laravel 12.11; on earlier releases a delayed job's sample includes its delay. Only a job's first attempt is sampled: a released or retried job keeps its original `pushedAt`. Samples above `pickup_time.max_sample_seconds` are dropped, which covers failed jobs re-pushed with `queue:retry`. Keep the cap well above your largest SLA target: a breach is a sample above the target, so a cap at or below it drops every breach and the queue always reads as healthy. `queue:autoscale:doctor` warns when that happens.
+
+Samples are recorded inside the worker processes and read by the manager, so they only reach it through a shared store. With the default `pickup_time.store` of `auto` that store is Redis in cluster mode and a no-op on a single host; set `QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis` to use pickup percentiles on a single host. Without samples the strategy uses the oldest job's age instead.
+
+On SQS, workers see the full queue URL as the job's queue. Samples (and failure-fuse outcomes) are recorded under the queue name instead, with the connection's `suffix` removed, so the manager finds them. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
 
 Horizon writes `pushedAt`; plain Laravel does not. Without it there are no pickup samples and the strategy falls back to the oldest job's age, which some drivers (SQS among them) cannot report. Set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` to stamp it on every dispatched job. Under Horizon the stamp is harmless: Horizon writes its own `pushedAt` when it pushes the job, overwriting the stamp with a timestamp from the same moment, so samples are the same either way.
 
