@@ -31,9 +31,12 @@ resolves CPU and memory **independently**, each through the same three-source ch
 A queue can have measured CPU and config memory at the same time; the dimensions never borrow each
 other's source.
 
-On Linux, memory is then floored at what the workload's live workers have actually peaked at: the
-90th percentile of each worker's `VmHWM` (peak resident memory since it started, from
-`/proc/<pid>/status`), read at the start of every cycle. The per-job measurement is sampled while a
+On Linux, memory is then floored at what the workload's live workers have actually peaked at, from
+each worker's `VmHWM` (peak resident memory since it started, from `/proc/<pid>/status`), read at the
+start of every cycle. With ten or more workers the floor is their 90th percentile; with fewer it is
+the lower median, because a 90th percentile of a handful of samples is just the highest one, and a
+single worker that once ran an unusually heavy job would otherwise set the cost of every worker on
+the queue. The per-job measurement is sampled while a
 job runs, so it misses a worker's boot peak (loading the framework, filling OPcache), which is when
 a host packed to its limit gets OOM-killed. The floor only ever raises an estimate. The per-host
 capacity a cluster manager reports uses the global default floored the same way across all of the

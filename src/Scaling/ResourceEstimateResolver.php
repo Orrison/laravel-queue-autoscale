@@ -7,6 +7,7 @@ namespace Cbox\LaravelQueueAutoscale\Scaling;
 use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\EstimateSource;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\WorkerPeakMemory;
 
 /**
  * Resolves per-queue resource estimates using a three-source precedence chain:
@@ -30,14 +31,14 @@ class ResourceEstimateResolver
     private array $measured = [];
 
     /**
-     * p90 of live workers' peak memory, per workload and across the host.
+     * What live workers typically peak at, per workload and across the host.
+     * See WorkerPeakMemory for the statistic.
      *
-     * @var array<string, array{mb: float, workers: int}>
+     * @var array<string, WorkerPeakMemory>
      */
     private array $workerPeakMemory = [];
 
-    /** @var array{mb: float, workers: int}|null */
-    private ?array $hostWorkerPeakMemory = null;
+    private ?WorkerPeakMemory $hostWorkerPeakMemory = null;
 
     public function resolve(string $connection, string $queue): ResourceEstimate
     {
@@ -129,11 +130,11 @@ class ResourceEstimateResolver
                 continue;
             }
 
-            $this->workerPeakMemory[$key] = ['mb' => self::p90($peaks), 'workers' => count($peaks)];
+            $this->workerPeakMemory[$key] = WorkerPeakMemory::fromPeaks($peaks);
             array_push($all, ...$peaks);
         }
 
-        $this->hostWorkerPeakMemory = $all === [] ? null : ['mb' => self::p90($all), 'workers' => count($all)];
+        $this->hostWorkerPeakMemory = $all === [] ? null : WorkerPeakMemory::fromPeaks($all);
     }
 
     /**
@@ -161,26 +162,15 @@ class ResourceEstimateResolver
 
     /**
      * @param  array{value: float, source: EstimateSource, samples: int|null}  $memory
-     * @param  array{mb: float, workers: int}|null  $peak
      * @return array{value: float, source: EstimateSource, samples: int|null}
      */
-    private function withWorkerPeakFloor(array $memory, ?array $peak): array
+    private function withWorkerPeakFloor(array $memory, ?WorkerPeakMemory $peak): array
     {
-        if ($peak === null || $peak['mb'] <= $memory['value']) {
+        if ($peak === null || $peak->mb <= $memory['value']) {
             return $memory;
         }
 
-        return ['value' => $peak['mb'], 'source' => EstimateSource::Measured, 'samples' => $peak['workers']];
-    }
-
-    /**
-     * @param  non-empty-list<float>  $values
-     */
-    private static function p90(array $values): float
-    {
-        sort($values);
-
-        return $values[max((int) ceil(count($values) * 0.9) - 1, 0)];
+        return ['value' => $peak->mb, 'source' => EstimateSource::Measured, 'samples' => $peak->workers];
     }
 
     /**
