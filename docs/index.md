@@ -183,7 +183,10 @@ failing dependency and burns each job's retry budget faster. The fuse watches th
 rate, holds the queue at `workers.min`, and after a cooldown lets a single worker probe for recovery.
 
 **Resource-aware.** CPU and memory ceilings are measured on the host and constrain every decision,
-so the manager will not spawn more workers than the machine can carry.
+so the manager will not spawn more workers than the machine can carry. Inside a container, memory is
+sized against the container's own limit by its working set, booting workers are charged before they
+show up as used, and capacity is held after the kernel OOM-kills a process. See
+[Resource Constraints](algorithms/resource-constraints.md).
 
 **Metrics-driven.** Queue discovery and all metrics come from `cboxdk/laravel-queue-metrics`.
 

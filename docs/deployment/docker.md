@@ -1,6 +1,6 @@
 ---
 title: "Docker / Compose"
-description: "Run Queue Autoscale as a dedicated container service"
+description: "Run the Queue Autoscale manager as a dedicated Docker, Compose, Swarm or Kubernetes service with clean signal handling"
 weight: 4
 ---
 

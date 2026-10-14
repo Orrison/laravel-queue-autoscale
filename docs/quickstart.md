@@ -146,6 +146,8 @@ Run the manager as a long-running daemon. Pick your platform:
 - [Laravel Forge](deployment/forge.md)
 - [Ploi](deployment/ploi.md)
 - [Docker / Compose](deployment/docker.md)
+- [Kubernetes and Amazon ECS](deployment/kubernetes-ecs.md)
+- [Running on Amazon SQS](deployment/amazon-sqs.md)
 
 **Important:** if your platform has a separate "queue workers" UI (Forge, Ploi), **don't** configure workers there for queues the autoscaler manages. They would fight. See each platform page for details.
 
