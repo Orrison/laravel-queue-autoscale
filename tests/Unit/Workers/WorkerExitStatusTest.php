@@ -51,3 +51,17 @@ test('reports whether the manager had asked the worker to stop', function (): vo
 
     expect(WorkerExitStatus::of($worker)->terminationRequested)->toBeTrue();
 });
+
+test('reports no signal when the platform cannot say which one', function (): void {
+    // PHP built with --enable-sigchild throws from getTermSignal() when the signal is unknown.
+    $process = Mockery::mock(Process::class);
+    $process->shouldReceive('getPid')->andReturn(4242);
+    $process->shouldReceive('hasBeenSignaled')->andReturn(true);
+    $process->shouldReceive('getTermSignal')->andThrow(new RuntimeException('signal unknown'));
+    $process->shouldReceive('getExitCode')->andReturn(null);
+
+    $exit = WorkerExitStatus::of(new WorkerProcess($process, 'redis', 'default', now()));
+
+    expect($exit->termSignal)->toBeNull()
+        ->and($exit->isGraceful())->toBeFalse();
+});
