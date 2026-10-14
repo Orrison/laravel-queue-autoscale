@@ -27,6 +27,13 @@ readonly class MemoryBreakdown
         public float $totalMemoryMb = 0.0,
         public float $workerMemoryMb = 0.0,
         public string $estimateSource = 'unknown',
+        public float $usedMemoryMb = 0.0,
+        public float $headroomMb = 0.0,
+        public ?MemoryScopeKind $scope = null,
+        public ?MemoryScopeKind $cappedBy = null,
+        public int $settlingWorkers = 0,
+        public ?int $oomBackoffCeiling = null,
+        public ?string $oomBackoffUntil = null,
     ) {}
 
     /**
@@ -41,6 +48,13 @@ readonly class MemoryBreakdown
             totalMemoryMb: Coerce::toFloat($details['total_memory_mb'] ?? 0.0),
             workerMemoryMb: Coerce::toFloat($details['worker_memory_mb'] ?? 0.0),
             estimateSource: Coerce::toString($details['memory_estimate_source'] ?? null, 'unknown'),
+            usedMemoryMb: Coerce::toFloat($details['used_memory_mb'] ?? 0.0),
+            headroomMb: Coerce::toFloat($details['headroom_mb'] ?? 0.0),
+            scope: MemoryScopeKind::tryFrom(Coerce::toString($details['memory_scope'] ?? null)),
+            cappedBy: MemoryScopeKind::tryFrom(Coerce::toString($details['memory_capped_by'] ?? null)),
+            settlingWorkers: Coerce::toInt($details['settling_workers'] ?? 0),
+            oomBackoffCeiling: is_numeric($details['oom_backoff_ceiling'] ?? null) ? Coerce::toInt($details['oom_backoff_ceiling']) : null,
+            oomBackoffUntil: is_string($details['oom_backoff_until'] ?? null) ? $details['oom_backoff_until'] : null,
         );
     }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
 use Cbox\SystemMetrics\DTO\Metrics\Container\CgroupVersion;
 use Cbox\SystemMetrics\DTO\Metrics\Container\ContainerLimits;
@@ -180,4 +181,29 @@ test('falls back to half of the reported memory when nothing can be read', funct
     expect($memory['memory_scope'])->toBe('fallback')
         ->and($memory['total_memory_mb'])->toBe(16_000.0)
         ->and($memory['current_memory_percent'])->toBe(50.0);
+});
+
+test('the typed memory breakdown carries the scope, cap and settling charge', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 64_000, availableMb: 500));
+    $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 1_000));
+
+    $calculator = new CapacityCalculator;
+    $calculator->countSettlingWorkersWith(fn (): int => 2);
+
+    $memory = memoryCapacity(currentWorkers: 2, calculator: $calculator)->memoryBreakdown();
+
+    expect($memory->scope)->toBe(MemoryScopeKind::Cgroup)
+        ->and($memory->cappedBy)->toBe(MemoryScopeKind::Host)
+        ->and($memory->usedMemoryMb)->toBe(1_000.0)
+        ->and($memory->headroomMb)->toBe(300.0)
+        ->and($memory->settlingWorkers)->toBe(2)
+        ->and($memory->oomBackoffCeiling)->toBeNull()
+        ->and($memory->oomBackoffUntil)->toBeNull();
+});
+
+test('a cgroup reporting a zero memory limit is treated as having none', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+    $this->fakes->container->set(cgroupMemory(limitMb: 0, usageMb: 700));
+
+    expect(memoryCapacity()->details['memory_details']['memory_scope'])->toBe('host');
 });

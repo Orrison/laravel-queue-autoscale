@@ -7,6 +7,9 @@ namespace Cbox\LaravelQueueAutoscale\Scaling\Calculators;
 use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryHeadroom;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScope;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
 use Cbox\SystemMetrics\DTO\Metrics\Cpu\CpuSnapshot;
 use Cbox\SystemMetrics\DTO\Metrics\SystemLimits;
@@ -22,11 +25,12 @@ class CapacityCalculator
     private ?float $cachedCpuPercent = null;
 
     /**
-     * Memory limit and usage per scope that applies to this host, in MB.
+     * Memory limit and usage in every scope that applies to this host; null
+     * until the first successful refresh.
      *
-     * @var non-empty-array<string, array{limit_mb: float, used_mb: float}>
+     * @var non-empty-list<MemoryScope>|null
      */
-    private array $cachedMemoryScopes = ['fallback' => ['limit_mb' => 4096.0, 'used_mb' => 2048.0]];
+    private ?array $cachedMemoryScopes = null;
 
     private ?float $cachedAvailableCores = null;
 
@@ -109,8 +113,8 @@ class CapacityCalculator
         $workerMemoryMb = max($estimate->memoryMbPerWorker, 1.0);
 
         $memory = $this->memoryHeadroom($maxMemoryPercent);
-        $totalMemoryMb = $memory['limit_mb'];
-        $usedMemoryMb = $memory['used_mb'];
+        $totalMemoryMb = $memory->scope->limitMb;
+        $usedMemoryMb = $memory->scope->usedMb;
         $currentMemoryPercent = $totalMemoryMb > 0 ? ($usedMemoryMb / $totalMemoryMb) * 100 : 0.0;
 
         // A worker that has just started has not yet grown to its footprint, so
@@ -120,7 +124,7 @@ class CapacityCalculator
         $settlingWorkers = $this->settlingWorkerCounter !== null
             ? max(min(($this->settlingWorkerCounter)(), $currentWorkers), 0)
             : 0;
-        $headroomMb = max($memory['headroom_mb'] - $settlingWorkers * $workerMemoryMb, 0.0);
+        $headroomMb = max($memory->headroomMb - $settlingWorkers * $workerMemoryMb, 0.0);
         $availableMemoryPercent = $totalMemoryMb > 0 ? ($headroomMb / $totalMemoryMb) * 100 : 0.0;
 
         $additionalWorkersByMemory = (int) floor($headroomMb / $workerMemoryMb);
@@ -155,7 +159,7 @@ class CapacityCalculator
                 '%.1fGB available of %.1fGB (%s), %dMB/worker',
                 $headroomMb / 1024,
                 $totalMemoryMb / 1024,
-                $memory['scope'].($memory['capped_by'] !== null ? ", capped by {$memory['capped_by']} free memory" : ''),
+                $memory->scope->kind->value.($memory->cappedBy !== null ? ", capped by {$memory->cappedBy->value} free memory" : ''),
                 $workerMemoryMb
             ),
             'cpu_details' => [
@@ -175,8 +179,8 @@ class CapacityCalculator
                 'total_memory_mb' => $totalMemoryMb,
                 'used_memory_mb' => $usedMemoryMb,
                 'headroom_mb' => $headroomMb,
-                'memory_scope' => $memory['scope'],
-                'memory_capped_by' => $memory['capped_by'],
+                'memory_scope' => $memory->scope->kind->value,
+                'memory_capped_by' => $memory->cappedBy?->value,
                 'settling_workers' => $settlingWorkers,
                 'worker_memory_mb' => $workerMemoryMb,
                 'memory_estimate_source' => $estimate->memorySource->value,
@@ -339,7 +343,7 @@ class CapacityCalculator
      *
      * Each scope pairs a limit with usage measured against that same limit.
      *
-     * @return non-empty-array<string, array{limit_mb: float, used_mb: float}>
+     * @return non-empty-list<MemoryScope>
      */
     private function measureMemoryScopes(SystemLimits $limits): array
     {
@@ -354,7 +358,7 @@ class CapacityCalculator
 
             if ($memory->totalBytes > 0) {
                 $hostUsedMb = self::toMb(max($memory->totalBytes - $memory->availableBytes, 0));
-                $scopes['host'] = ['limit_mb' => self::toMb($memory->totalBytes), 'used_mb' => $hostUsedMb];
+                $scopes[] = new MemoryScope(MemoryScopeKind::Host, self::toMb($memory->totalBytes), $hostUsedMb);
             }
         }
 
@@ -365,9 +369,11 @@ class CapacityCalculator
 
             if ($container->memoryUsageBytes !== null) {
                 $cgroupUsedMb = self::toMb($container->memoryUsageBytes);
+                $cgroupLimitBytes = $container->memoryLimitBytes;
 
-                if ($container->hasMemoryLimit()) {
-                    $scopes['cgroup'] = ['limit_mb' => self::toMb((int) $container->memoryLimitBytes), 'used_mb' => $cgroupUsedMb];
+                // Zero means no limit was set, the same as hasMemoryLimit().
+                if ($cgroupLimitBytes !== null && $cgroupLimitBytes > 0) {
+                    $scopes[] = new MemoryScope(MemoryScopeKind::Cgroup, self::toMb($cgroupLimitBytes), $cgroupUsedMb);
                 }
             }
         }
@@ -376,17 +382,25 @@ class CapacityCalculator
         $configuredUsedMb = $cgroupUsedMb ?? $hostUsedMb;
 
         if ($configuredLimitMb !== null && $configuredUsedMb !== null) {
-            $scopes['configured'] = ['limit_mb' => $configuredLimitMb, 'used_mb' => $configuredUsedMb];
+            $scopes[] = new MemoryScope(MemoryScopeKind::Configured, $configuredLimitMb, $configuredUsedMb);
         }
 
         if ($scopes === []) {
-            // Nothing readable: keep the long-standing assumption of half the
-            // reported memory in use.
-            $totalMb = $limits->memoryBytes > 0 ? self::toMb($limits->memoryBytes) : 4096.0;
-            $scopes['fallback'] = ['limit_mb' => $totalMb, 'used_mb' => $totalMb * 0.5];
+            return [self::fallbackMemoryScope($limits->memoryBytes)];
         }
 
         return $scopes;
+    }
+
+    /**
+     * Nothing readable: keep the long-standing assumption of half the
+     * reported memory in use.
+     */
+    private static function fallbackMemoryScope(int $reportedBytes): MemoryScope
+    {
+        $totalMb = $reportedBytes > 0 ? self::toMb($reportedBytes) : 4096.0;
+
+        return new MemoryScope(MemoryScopeKind::Fallback, $totalMb, $totalMb * 0.5);
     }
 
     private static function toMb(int|float $bytes): float
@@ -401,42 +415,33 @@ class CapacityCalculator
      * host: a configured limit, else the container's cgroup limit, else the
      * host. Every other scope still caps the result at what it has free, so a
      * container on an oversubscribed node cannot claim memory the node lacks.
-     *
-     * @return array{scope: string, limit_mb: float, used_mb: float, headroom_mb: float, capped_by: string|null}
      */
-    private function memoryHeadroom(int $maxMemoryPercent): array
+    private function memoryHeadroom(int $maxMemoryPercent): MemoryHeadroom
     {
-        $scopes = $this->cachedMemoryScopes;
+        $scopes = $this->cachedMemoryScopes ?? [self::fallbackMemoryScope(0)];
+        $primary = $scopes[0];
 
-        $primary = 'fallback';
+        foreach (MemoryScopeKind::byPrecedence() as $kind) {
+            $match = array_find($scopes, fn (MemoryScope $scope): bool => $scope->kind === $kind);
 
-        foreach (['configured', 'cgroup', 'host', 'fallback'] as $candidate) {
-            if (isset($scopes[$candidate])) {
-                $primary = $candidate;
+            if ($match !== null) {
+                $primary = $match;
 
                 break;
             }
         }
 
-        $headroomMb = $scopes[$primary]['limit_mb'] * ($maxMemoryPercent / 100) - $scopes[$primary]['used_mb'];
+        $headroomMb = $primary->limitMb * ($maxMemoryPercent / 100) - $primary->usedMb;
         $cappedBy = null;
 
-        foreach ($scopes as $scope => $memory) {
-            $freeMb = $memory['limit_mb'] - $memory['used_mb'];
-
-            if ($scope !== $primary && $freeMb < $headroomMb) {
-                $headroomMb = $freeMb;
-                $cappedBy = $scope;
+        foreach ($scopes as $scope) {
+            if ($scope !== $primary && $scope->freeMb() < $headroomMb) {
+                $headroomMb = $scope->freeMb();
+                $cappedBy = $scope->kind;
             }
         }
 
-        return [
-            'scope' => $primary,
-            'limit_mb' => $scopes[$primary]['limit_mb'],
-            'used_mb' => $scopes[$primary]['used_mb'],
-            'headroom_mb' => max($headroomMb, 0.0),
-            'capped_by' => $cappedBy,
-        ];
+        return new MemoryHeadroom($primary, max($headroomMb, 0.0), $cappedBy);
     }
 
     private function oomBackoff(): OomBackoff

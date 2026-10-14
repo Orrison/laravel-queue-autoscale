@@ -79,6 +79,15 @@ $cpu->usableCores;            // float, total minus the reserve
 $cpu->currentCpuPercent;      // float
 $cpu->workerCpuCoreEstimate;  // float, cores one worker is assumed to occupy
 $cpu->estimateSource;         // 'measured', 'config' or 'default'
+
+$memory = $decision->capacity->memoryBreakdown();
+
+$memory->totalMemoryMb;       // float, the limit max_memory_percent applies to
+$memory->headroomMb;          // float, room left after booting workers are charged
+$memory->scope;               // MemoryScopeKind: Configured, Cgroup, Host or Fallback
+$memory->cappedBy;            // ?MemoryScopeKind, a scope whose free memory was lower
+$memory->settlingWorkers;     // int, workers still booting and charged in full
+$memory->oomBackoffCeiling;   // ?int, worker ceiling held after an OOM kill
 ```
 
 `limitingFactor` values seen on a decision: `cpu`, `memory`, `balanced`, `config`, `strategy`, `fuse`, `system_metrics_unavailable`.
