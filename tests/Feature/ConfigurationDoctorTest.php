@@ -327,3 +327,37 @@ test('a pickup sample cap above every SLA target, or no cap, is not reported', f
 
     expect(findingTitled(diagnose(['reports']), 'pickup sample cap'))->toBeNull();
 })->with(['cap above the target' => [3600], 'no cap' => [null]]);
+
+test('every queue whose SLA the pickup cap hides is named, with the cap and the fix', function (): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', '600');
+    config()->set('queue-autoscale.queues', [
+        'reports' => ['sla' => ['target_seconds' => 900], 'workers' => ['timeout_seconds' => 600]],
+        'exports' => ['sla' => ['target_seconds' => 600]],
+        'emails' => ['sla' => ['target_seconds' => 30]],
+    ]);
+
+    $finding = findingTitled(diagnose(['reports', 'exports', 'emails']), 'pickup sample cap');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toContain('max_sample_seconds is 600s')
+        ->and($finding->detail)->toContain("'reports' (900s), 'exports' (600s)")
+        ->and($finding->detail)->not->toContain("'emails'")
+        ->and($finding->remedy)->toContain('set it to null');
+});
+
+test('a pickup cap of zero is no cap and is not reported', function (): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', 0);
+    config()->set('queue-autoscale.queues', ['reports' => ['sla' => ['target_seconds' => 3600]]]);
+
+    expect(findingTitled(diagnose(['reports']), 'pickup sample cap'))->toBeNull();
+});
+
+test('the pickup cap is checked against the default SLA for queues with no rule of their own', function (): void {
+    // The shipped balanced profile targets 30s.
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', 10);
+
+    $finding = findingTitled(diagnose(['default']), 'pickup sample cap');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toContain("'default' (30s)");
+});
