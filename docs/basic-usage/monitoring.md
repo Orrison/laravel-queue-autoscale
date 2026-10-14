@@ -126,21 +126,67 @@ use Cbox\LaravelQueueAutoscale\Events\SlaBreached;
 Event::listen(function (SlaBreached $event) {
     $event->connection;
     $event->queue;
-    $event->oldestJobAge;    // int seconds
-    $event->slaTarget;       // int seconds
-    $event->pending;         // int
-    $event->activeWorkers;   // int
-    $event->breachSeconds();
-    $event->breachPercentage();
+    $event->oldestJobAge;        // int seconds, as the driver reported it (always 0 on SQS)
+    $event->slaTarget;           // int seconds
+    $event->pending;             // int
+    $event->activeWorkers;       // int
+    $event->slaSignal;           // ?SlaSignal — the number the breach was decided on
+    $event->signalSeconds();     // float: slaSignal->seconds, or oldestJobAge without a signal
+    $event->breachSeconds();     // int, from signalSeconds()
+    $event->breachPercentage();  // float, from signalSeconds()
 });
 ```
 
-`SlaRecovered` has the same shape but with `currentJobAge` instead of `oldestJobAge`, and offers `marginSeconds()` / `marginPercentage()`.
+`SlaRecovered` has the same shape but with `currentJobAge` instead of `oldestJobAge`, and offers
+`marginSeconds()` / `marginPercentage()`, also computed from `signalSeconds()`.
 
-Both are decided from the oldest pending job's age, which some drivers cannot report — Amazon SQS
-among them. On those drivers neither event fires. `SlaBreachPredicted` still does: its prediction is the time
-to work through the backlog at the target worker count, which needs no job age. See
-[Running on Amazon SQS](../deployment/amazon-sqs.md).
+### How breach is decided
+
+A workload is judged on its **SLA signal**: the same number the scaling strategy computed its
+target from, so the breach you are told about and the workers you are given always agree.
+
+| Situation | Signal | `slaSignal->source` |
+|---|---|---|
+| At least `sla.min_samples` pickup samples in the last `sla.window_seconds` | The `sla.percentile` (default p95) of those pickup times | `SlaSignalSource::PickupPercentile` |
+| Fewer samples than that | The oldest pending job's age | `SlaSignalSource::OldestJobAgeFallback` |
+| A custom strategy that does not report a signal | The oldest pending job's age | `SlaSignalSource::OldestJobAge` |
+
+From that signal:
+
+- **Breached** when the signal is at or over `sla.target_seconds`. A reading of 0 never breaches —
+  an empty queue reports an oldest age of 0.
+- **Warning** (console only) when it is over 80% of the target without reaching it.
+- **OK** otherwise.
+
+The pickup percentile wins whenever it exists, exactly as it does for the strategy: a p95 well
+inside the target is not a breach because one straggler at the head of the queue is old, and a
+young head of queue does not hide a p95 that has blown through the target. Groups pool the samples
+of every member queue. Pinned (`workers.scalable: false`) queues never run the strategy, so the
+manager measures their signal directly, the same way.
+
+**Recovery follows the window.** The percentile is computed over every sample whose pickup happened
+in the last `sla.window_seconds`, capped at the newest `pickup_time.max_samples_per_queue`. Slow
+pickups keep the percentile high until either they age out of the window or enough fast pickups
+arrive that fewer than 5% of the window (for p95) is slow. So `SlaRecovered` can trail the backlog
+clearing by up to one window — the background profile's 900-second window recovers more slowly
+than the 300-second default. That lag is what keeps a percentile breach from flapping: one fast
+cycle does not end it.
+
+**An inconclusive reading does not end a breach.** When the window runs short of samples the signal
+falls back to the oldest job's age. On a driver that cannot report that age the fallback reads 0,
+and a stalled queue — which by definition makes no pickups — is exactly the queue whose window
+drains. So while a breach is open, a fallback reading of 0 with jobs still pending holds the breach
+rather than recovering it; once the queue is empty it recovers. A custom strategy judged on the
+oldest age (`OldestJobAge`) is not held this way, so its behaviour is unchanged.
+
+On Amazon SQS the pickup percentile is the only signal, so `SlaBreached` and `SlaRecovered` need
+pickup samples to be recorded — see [Running on Amazon SQS](../deployment/amazon-sqs.md). Without
+them a queue on SQS is judged on an oldest age of 0 and never breaches. `SlaBreachPredicted` fires
+either way: its prediction is the time to work through the backlog at the target worker count,
+which needs no job age.
+
+A custom strategy opts in by implementing `SlaSignalStrategy` — see
+[Custom Strategies](../advanced-usage/custom-strategies.md#reporting-an-sla-signal).
 
 ### Failure fuse state
 
@@ -332,7 +378,7 @@ Setting `telemetry.enabled` to `false` skips registration entirely. `telemetry.e
 | `queue_autoscale.fuse.trips` | counter | `FuseTripped` |
 | `queue_autoscale.cluster.leader_changes` | counter | `ClusterLeaderChanged` |
 
-Gauges and counters are labelled with `connection` and `queue` where the source event carries them. OTLP events are emitted alongside: `queue_autoscale.scaling.action`, `.sla.breached`, `.sla.recovered`, `.manager.started`, `.manager.stopped`, `.cluster.leader_changed`, `.fuse.tripped`, `.fuse.probing`, `.fuse.recovered`.
+Gauges and counters are labelled with `connection` and `queue` where the source event carries them. The `.sla.breached` and `.sla.recovered` OTLP events carry `sla_signal_seconds` and `sla_signal_source` next to the raw `oldest_job_age` / `current_job_age`, so a breach on SQS shows the pickup time it was decided on. OTLP events are emitted alongside: `queue_autoscale.scaling.action`, `.sla.breached`, `.sla.recovered`, `.manager.started`, `.manager.stopped`, `.cluster.leader_changed`, `.fuse.tripped`, `.fuse.probing`, `.fuse.recovered`.
 
 Every handler flushes immediately except the per-cycle `ScalingDecisionMade` one, which flushes at most once per second.
 
@@ -378,9 +424,12 @@ class AlertOnSlaBreach
         $this->alerting->send([
             'severity' => 'critical',
             'title' => "SLA breached: {$event->connection}:{$event->queue}",
+            // signalSeconds() is what the breach was decided on — the p95
+            // pickup time when measured, the oldest job's age otherwise.
+            // oldestJobAge alone reads 0 on SQS.
             'message' => sprintf(
-                'Oldest job is %ds old against a %ds target (%.1f%% over)',
-                $event->oldestJobAge,
+                'Jobs are waiting %.1fs against a %ds target (%.1f%% over)',
+                $event->signalSeconds(),
                 $event->slaTarget,
                 $event->breachPercentage(),
             ),

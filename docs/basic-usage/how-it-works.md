@@ -119,6 +119,8 @@ Two more details:
 
 The drain calculator's "oldest job age" is a **p95 pickup time** when there are enough samples: the strategy collects `pickup_seconds` samples across the queue (or all member queues of a group) over `sla.window_seconds` and asks the percentile calculator for `sla.percentile`, requiring `sla.min_samples`. If that returns null, it falls back to the raw `oldest_job_age` from the metrics package.
 
+The same number — the **SLA signal** — decides breach. The strategy reports it with the decision, and `SlaBreached`, `SlaRecovered` and the console's breached/warning status are judged on it rather than on the oldest job's age, so a queue on a driver that cannot report that age (Amazon SQS) still breaches when its pickup time does. See [How breach is decided](monitoring.md#how-breach-is-decided).
+
 #### D. Saturation boost and smoothing
 
 Two final adjustments inside the strategy:
@@ -174,7 +176,7 @@ Anti-flapping cooldown is not part of the engine. It is applied by the manager a
    ├─ ScalingDecisionMade (every cycle)
    ├─ SlaBreachPredicted (when predictedPickupTime > slaTarget)
    ├─ WorkersScaled (dispatched by the spawn/terminate step)
-   └─ SlaBreached / SlaRecovered (on state transitions)
+   └─ SlaBreached / SlaRecovered (on state transitions of the SLA signal)
 ```
 
 Note that `ScalingDecisionMade` carries the **post-policy** decision, and that it is dispatched *after* the scaling action, not before.

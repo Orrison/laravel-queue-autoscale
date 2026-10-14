@@ -19,7 +19,7 @@ use Cbox\LaravelQueueAutoscale\Testing\QueueMetricsFactory;
 uses(InteractsWithAutoscaling::class);
 ```
 
-Everything below drives the real scaling engine with your real configuration. Only the two stores
+Everything below drives the real scaling engine with your real configuration. Only the stores
 that need Redis are substituted.
 
 ## Asserting what a queue will ask for
@@ -102,6 +102,44 @@ there, which is enough to test what a manager *does* with cluster state — and 
 to test whether election itself is sound. The real store needs Redis for that: leader election
 depends on atomic compare-and-set and a reliable TTL, and a fake that pretends otherwise would hand
 two managers the same lease and pass.
+
+## Testing SLA breach
+
+Breach is judged on the pickup-time percentile when the SLA window has enough samples, and on the
+oldest job's age otherwise. `fakePickupTimes()` swaps the pickup store for an in-memory one you can
+seed, so a spec can put a measured p95 in front of the strategy — the only signal a driver like
+Amazon SQS has, since it cannot report the oldest job's age:
+
+```php
+test('the orders queue on SQS breaches when pickups are slow', function () {
+    $pickups = $this->fakePickupTimes();
+    $queue = QueueMetricsFactory::onSqs(200, 'orders');   // oldest job age 0, as SQS reports it
+
+    $this->assertWithinSla($queue);                      // nothing measured: judged on age 0
+
+    $pickups->seedRepeated(20, 45.0, 'sqs', 'orders');   // 20 pickups that waited 45s
+
+    $this->assertBreachesSla($queue);
+    expect($this->slaSignalFor($queue)->describe())->toBe('p95 pickup=45.0s');
+});
+```
+
+| Helper | What it does |
+|---|---|
+| `fakePickupTimes()` | Binds and returns an `InMemoryPickupTimeStore`, and re-resolves the strategy, engine and manager so they use it |
+| `slaSignalFor($metrics)` | The `SlaSignal` the queue is judged on — through the strategy, or measured directly for a pinned queue |
+| `assertBreachesSla($metrics)` / `assertWithinSla($metrics)` | Assert that signal is, or is not, at or over `sla.target_seconds` |
+| `QueueMetricsFactory::onSqs($pending)` | A snapshot on the `sqs` connection with an oldest job age of 0 |
+
+`InMemoryPickupTimeStore` stamps samples with Carbon's clock, so `Carbon::setTestNow()` ages them
+out of `sla.window_seconds` the way real time ages them out of Redis — that is how a spec drives
+recovery. `seed([...])`, `seedRepeated($count, $seconds)` and `clear()` take an optional connection
+and queue, defaulting to `redis` / `default`.
+
+These assert the instantaneous signal. Whether `SlaBreached` fires also depends on the previous
+state — it fires on the transition, and an open breach is held through an inconclusive reading —
+which the manager tracks across cycles. To assert the events themselves, combine `Event::fake()`
+with your own scheduling of the manager, or listen in an integration test.
 
 ## What is not faked
 

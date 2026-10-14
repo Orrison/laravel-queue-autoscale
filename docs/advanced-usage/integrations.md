@@ -76,7 +76,14 @@ The series produced are:
 |---|---|
 | Cluster | `queue_autoscale_cluster_managers`, `queue_autoscale_cluster_workers`, `queue_autoscale_cluster_required_workers`, `queue_autoscale_cluster_worker_capacity`, `queue_autoscale_cluster_recommended_hosts` |
 | Per manager | `queue_autoscale_cluster_host_workers`, `queue_autoscale_cluster_host_capacity`, `queue_autoscale_cluster_host_cpu_percent`, `queue_autoscale_cluster_host_memory_percent` |
-| Per workload | `queue_autoscale_workload_workers_current`, `queue_autoscale_workload_workers_target`, `queue_autoscale_workload_pending_jobs`, … |
+| Per workload | `queue_autoscale_workload_workers_current`, `queue_autoscale_workload_workers_target`, `queue_autoscale_workload_pending_jobs`, `queue_autoscale_workload_oldest_job_age_seconds`, `queue_autoscale_workload_sla_signal_seconds`, `queue_autoscale_workload_sla_breaching` |
+
+`queue_autoscale_workload_sla_signal_seconds` is the number the leader judged the workload's SLA on
+— the pickup-time percentile when measured, the oldest job's age otherwise — and
+`queue_autoscale_workload_sla_breaching` is `1` while the leader holds it in breach. Alert on these
+rather than on the oldest job age, which is always `0` on Amazon SQS. A summary published by a
+leader older than 4.5 has neither source field, so both fall back to the oldest job's age, which is
+what that leader judged breach on. See [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
 
 `clusterMetrics()` is deliberately narrower than `cluster()`. New summary fields do **not**
 automatically appear here — if you need full workload and lifecycle context, read `cluster()`.
@@ -140,6 +147,9 @@ Each `workloads[]` entry:
 - `current_workers`, `demand`, `target_workers`
 - `worker_min`, `worker_max`, `sla_target_seconds`
 - `pending`, `oldest_job_age`, `oldest_job_age_status`
+- `sla_signal_seconds`, `sla_signal_source` (`pickup_percentile`, `oldest_job_age_fallback` or
+  `oldest_job_age`), `sla_status` (`breached`, `warning` or `ok`) — added in 4.5; absent from a
+  summary written by an older leader
 - `throughput_per_minute`, `active_workers`, `utilization_percent`
 - `member_queues`
 - `action` — `'scale_up' | 'scale_down' | 'hold'`
@@ -161,8 +171,8 @@ All events live in `Cbox\LaravelQueueAutoscale\Events`.
 | `ScalingDecisionMade` | `decision` |
 | `SlaBreachPredicted` | `decision` |
 | `WorkersScaled` | `connection, queue, from, to, action, reason` |
-| `SlaBreached` | `connection, queue, oldestJobAge, slaTarget, pending, activeWorkers` |
-| `SlaRecovered` | `connection, queue, currentJobAge, slaTarget, pending, activeWorkers` |
+| `SlaBreached` | `connection, queue, oldestJobAge, slaTarget, pending, activeWorkers, slaSignal` |
+| `SlaRecovered` | `connection, queue, currentJobAge, slaTarget, pending, activeWorkers, slaSignal` |
 
 `ScalingDecisionMade` and `SlaBreachPredicted` carry the `ScalingDecision` **only** — no metrics
 object and no configuration — and they carry the decision *after* policies have modified it.

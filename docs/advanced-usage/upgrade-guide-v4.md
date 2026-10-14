@@ -217,3 +217,60 @@ shutdown aborts the rest of that evaluation cycle, so keep listeners cheap. See
 - [ ] Dashboards reading `total_memory_mb` / `current_memory_percent` checked against the new scope
 - [ ] On SQS: `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true`, and a Redis pickup store on a single host
 - [ ] `php artisan queue:autoscale:doctor` run, with no pickup-cap warning
+
+### 4.4 to 4.5
+
+```bash
+composer require cboxdk/laravel-queue-autoscale:^4.5
+```
+
+Then restart every `queue:autoscale` process. Nothing in the config file changes.
+
+**SLA breach is judged on the strategy's signal.** `SlaBreached`, `SlaRecovered`, the console's
+`breached` / `warning` / `ok` status and the cluster leader's breach state used to be decided from
+the oldest pending job's age alone, while the default `HybridStrategy` scaled on the p95 pickup
+time. They are now decided from the same number the strategy scaled on: the `sla.percentile` of
+pickup times over `sla.window_seconds` when the window holds at least `sla.min_samples`, the oldest
+job's age otherwise. See [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
+What that changes:
+
+- **On Amazon SQS, breach events start firing.** SQS reports an oldest age of 0, so before 4.5 a
+  queue there could never breach. With pickup samples recorded (`QUEUE_AUTOSCALE_STAMP_PUSHED_AT`
+  and a Redis pickup store, as in 4.4), `SlaBreached` now fires when the p95 crosses the target.
+  Expect alerts on SQS queues that were silently breaching.
+- **On Redis, with samples, the percentile decides.** A single old job no longer opens a breach
+  while the p95 is inside the target, and a p95 over the target opens one even while the head of the
+  queue is young. Queues without enough samples behave exactly as before.
+- **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window drops
+  under the target, which can trail the backlog clearing by up to one `sla.window_seconds`.
+- **A short window does not end a breach while jobs wait.** An open breach is held when the window
+  falls below `sla.min_samples` and the oldest-age fallback reads 0 with jobs still pending.
+
+**Custom strategies are unaffected unless they opt in.** `ScalingStrategyContract` is unchanged. A
+strategy that implements only it is judged on the oldest job's age, as before. To have breach
+follow your strategy's own measurement, implement the new `SlaSignalStrategy` — see
+[Custom Strategies](custom-strategies.md#reporting-an-sla-signal).
+
+**Additive API.** Every addition is an optional trailing parameter, so existing calls and
+subclasses keep working:
+
+- `SlaBreached` and `SlaRecovered` take `?SlaSignal $slaSignal = null` and gain `signalSeconds()`.
+  `oldestJobAge` / `currentJobAge` still carry the driver's raw age; `breachSeconds()`,
+  `breachPercentage()`, `marginSeconds()` and `marginPercentage()` now use the signal when there is
+  one — so on SQS they report real numbers instead of measuring against 0. Telemetry events carry
+  `sla_signal_seconds` and `sla_signal_source`.
+- `ScalingDecision` has `?SlaSignal $slaSignal`; `ScalingEngine` has `assessDemand()` and
+  `measureSlaSignal()`; `EvaluatedWorkload` takes an optional `slaSignal` and gains `slaSignal()`.
+- Cluster summary workloads carry `sla_signal_seconds`, `sla_signal_source` and `sla_status`, and
+  `clusterMetrics()` exports `queue_autoscale_workload_sla_signal_seconds` and
+  `queue_autoscale_workload_sla_breaching`. Read from a summary written by a 4.4 leader during a
+  rolling upgrade, both fall back to the oldest job's age.
+- Testing: `fakePickupTimes()`, `slaSignalFor()`, `assertBreachesSla()`, `assertWithinSla()`,
+  `InMemoryPickupTimeStore` and `QueueMetricsFactory::onSqs()`. See [Testing](../basic-usage/testing.md).
+
+#### 4.5 checklist
+
+- [ ] Every `queue:autoscale` process restarted (a mixed cluster works, but a 4.4 leader still judges breach on oldest age)
+- [ ] SLA alerts on SQS queues reviewed — they can fire now
+- [ ] Alert messages built from `$event->oldestJobAge` switched to `$event->signalSeconds()`
+- [ ] Custom strategies that measure pickup time: consider implementing `SlaSignalStrategy`

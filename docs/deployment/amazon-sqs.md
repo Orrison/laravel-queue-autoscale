@@ -10,13 +10,15 @@ The autoscaler works on SQS like on any other driver: the manager reads queue de
 `laravel-queue-metrics`, spawns `queue:work sqs` workers, and terminates them when the backlog is
 gone. Two things differ from Redis, and both decide how well it scales:
 
-- **SQS cannot report the age of its oldest message.** The pickup-time SLA has to come from pickup
-  samples, and on SQS those need two settings that are off by default.
+- **SQS cannot report the age of its oldest message.** The pickup-time SLA — for scaling and for
+  `SlaBreached` / `SlaRecovered` alike — has to come from pickup samples, and on SQS those need two
+  settings that are off by default.
 - **Workers see a queue URL, not a queue name.** The package reduces it back to the name, which is
   what you configure — so keep your queue names free of the connection's suffix.
 
 Version 4.4 or later is assumed throughout. Before 4.4, pickup samples and failure-fuse outcomes on
-SQS were recorded under the queue URL and never reached the manager.
+SQS were recorded under the queue URL and never reached the manager. On 4.4, samples reached the manager
+and drove scaling, but `SlaBreached` and `SlaRecovered` still could not fire on SQS; that needs 4.5.
 
 ## The minimal setup
 
@@ -71,9 +73,17 @@ SQS has no API for the second — Laravel's `SqsQueue::creationTimeOfOldestPendi
 - Worker targets come from the arrival rate (Little's Law) and the current backlog drained within the
   SLA window. Nothing measures how long jobs are actually waiting, so there is no urgency as they
   approach the target.
-- `SlaBreached` and `SlaRecovered` never fire, because both are decided from the oldest job's age.
-  `SlaBreachPredicted` still fires: its prediction is the time to work through the backlog at the
-  target worker count, which needs no job age.
+- `SlaBreached` and `SlaRecovered` never fire. Breach is judged on the same signal the strategy
+  scales on — the pickup percentile when there are enough samples, the oldest job's age otherwise —
+  and on SQS that age is always 0. `SlaBreachPredicted` still fires: its prediction is the time to
+  work through the backlog at the target worker count, which needs no job age.
+
+With samples flowing, from 4.5 `SlaBreached` fires when the p95 pickup time reaches the queue's
+`sla.target_seconds`, and `SlaRecovered` when the p95 over `sla.window_seconds` is back under it.
+The events' `oldestJobAge` / `currentJobAge` stay 0 on SQS; read `$event->slaSignal` or
+`$event->signalSeconds()` for the pickup time the breach was decided on. See
+[How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided) for the window and
+recovery semantics.
 
 A sample needs two things:
 

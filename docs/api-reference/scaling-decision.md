@@ -23,7 +23,11 @@ readonly class ScalingDecision
         public int $slaTarget = 30,
         public ?CapacityCalculationResult $capacity = null,
         public ?SpawnCompensationConfiguration $spawnCompensation = null,
+        public ScalingScope $scope = ScalingScope::Host,
+        public ?SlaSignal $slaSignal = null,       // since 4.5
     ) {}
+
+    public function withTargetWorkers(int $targetWorkers, ?string $reason = null): self;
 
     public function shouldScaleUp(): bool;
     public function shouldScaleDown(): bool;
@@ -36,6 +40,14 @@ readonly class ScalingDecision
 ```
 
 There is **no** `confidence` property on `ScalingDecision`, or anywhere else in the package.
+
+`slaSignal` is the SLA signal the engine judged the workload on: what a strategy implementing
+`SlaSignalStrategy` reported, else the oldest job's age. It is `null` on a decision built outside
+the engine — the cluster leader's per-workload decisions and those a policy constructs with `new`.
+`withTargetWorkers()` carries it over, so a policy that adjusts a target that way keeps it. Breach
+state is read from the engine's decision, before policies run, so a policy cannot change it. See
+[How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided) and the
+`SlaSignal` table in [Events](events.md#slabreached--slarecovered-fields).
 
 Do not confuse `ScalingDecision::action()` (`'scale_up' | 'scale_down' | 'hold'`) with `WorkersScaled::$action`, which is always `'up'` or `'down'`.
 

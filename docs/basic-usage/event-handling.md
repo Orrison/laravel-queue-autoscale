@@ -82,7 +82,7 @@ class SlaBreachPredicted
 
 ### `SlaBreached`
 
-Fired **once** when the oldest pending job crosses the SLA target — a state transition, not per cycle.
+Fired **once** when the workload's SLA signal reaches the SLA target — a state transition, not per cycle. The signal is the pickup-time percentile when the SLA window has enough samples and the oldest pending job's age otherwise; see [How breach is decided](monitoring.md#how-breach-is-decided).
 
 ```php
 class SlaBreached
@@ -90,13 +90,15 @@ class SlaBreached
     public function __construct(
         public readonly string $connection,
         public readonly string $queue,
-        public readonly int $oldestJobAge,
+        public readonly int $oldestJobAge,          // the driver's raw reading; always 0 on SQS
         public readonly int $slaTarget,
         public readonly int $pending,
         public readonly int $activeWorkers,
+        public readonly ?SlaSignal $slaSignal = null, // what the breach was decided on (4.5+)
     ) {}
 
-    public function breachSeconds(): int;      // how far over SLA
+    public function signalSeconds(): float;    // slaSignal->seconds, or oldestJobAge without one
+    public function breachSeconds(): int;      // how far over SLA, rounded up
     public function breachPercentage(): float; // same, as %
 }
 ```
@@ -105,7 +107,7 @@ class SlaBreached
 
 ### `SlaRecovered`
 
-Fired **once** when the queue drops back under its SLA target — the counterpart to `SlaBreached`.
+Fired **once** when the same SLA signal drops back under the target — the counterpart to `SlaBreached`. With a pickup percentile that is when the percentile over `sla.window_seconds` is under the target, which can trail the backlog clearing by up to one window.
 
 ```php
 class SlaRecovered
@@ -113,16 +115,20 @@ class SlaRecovered
     public function __construct(
         public readonly string $connection,
         public readonly string $queue,
-        public readonly int $currentJobAge,
+        public readonly int $currentJobAge,         // the driver's raw reading; always 0 on SQS
         public readonly int $slaTarget,
         public readonly int $pending,
         public readonly int $activeWorkers,
+        public readonly ?SlaSignal $slaSignal = null, // what recovery was decided on (4.5+)
     ) {}
 
-    public function marginSeconds(): int;       // buffer below SLA
+    public function signalSeconds(): float;     // slaSignal->seconds, or currentJobAge without one
+    public function marginSeconds(): int;       // buffer below SLA, rounded down
     public function marginPercentage(): float;
 }
 ```
+
+`SlaSignal` (`Cbox\LaravelQueueAutoscale\Scaling\SlaSignal`) carries `seconds` (float), `source` (`SlaSignalSource::PickupPercentile`, `OldestJobAgeFallback` or `OldestJobAge`) and `percentile` (the configured percentile when the source is `PickupPercentile`, else `null`). `describe()` renders it as `p95 pickup=42.0s` or `oldest_age=42s`. It is `null` only on an event you construct yourself.
 
 **Use for:** closing alerts, MTTR tracking.
 
@@ -393,12 +399,14 @@ $scalingDown = $event->action === 'down';
 ```php
 $event->connection      // 'redis'
 $event->queue           // 'default'
-$event->oldestJobAge    // int seconds (SlaBreached only — SlaRecovered uses ->currentJobAge)
+$event->oldestJobAge    // int seconds (SlaBreached only — SlaRecovered uses ->currentJobAge); 0 on SQS
 $event->slaTarget       // int seconds
 $event->pending         // int — pending jobs at the moment the event fired
 $event->activeWorkers   // int
+$event->slaSignal       // ?SlaSignal — seconds, source, percentile
 
 // Convenience methods:
+$event->signalSeconds()        // both — the number the transition was decided on
 $event->breachSeconds()        // SlaBreached
 $event->breachPercentage()     // SlaBreached
 $event->marginSeconds()        // SlaRecovered

@@ -441,8 +441,8 @@ All events live in `Cbox\LaravelQueueAutoscale\Events`.
 | `ScalingDecisionMade` | `decision` |
 | `SlaBreachPredicted` | `decision` |
 | `WorkersScaled` | `connection`, `queue`, `from`, `to`, `action`, `reason` |
-| `SlaBreached` | `connection`, `queue`, `oldestJobAge`, `slaTarget`, `pending`, `activeWorkers` |
-| `SlaRecovered` | `connection`, `queue`, `currentJobAge`, `slaTarget`, `pending`, `activeWorkers` |
+| `SlaBreached` | `connection`, `queue`, `oldestJobAge`, `slaTarget`, `pending`, `activeWorkers`, `slaSignal` |
+| `SlaRecovered` | `connection`, `queue`, `currentJobAge`, `slaTarget`, `pending`, `activeWorkers`, `slaSignal` |
 | `FuseTripped` | `connection`, `queue`, `failureRate`, `samples`, `failures`, `thresholdPercent`, `heldAtWorkers` |
 | `FuseProbing` | `connection`, `queue`, `probeWorkers`, `cooldownSeconds` |
 | `FuseRecovered` | `connection`, `queue`, `failureRate`, `samples` |

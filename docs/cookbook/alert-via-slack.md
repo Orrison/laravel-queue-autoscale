@@ -56,10 +56,10 @@ class NotifyQueueSlack
         }
 
         $this->post(sprintf(
-            ":rotating_light: *SLA breach on `%s:%s`* — oldest job %ds (target %ds), %d pending, %d workers",
+            ":rotating_light: *SLA breach on `%s:%s`* — jobs waiting %.1fs (target %ds), %d pending, %d workers",
             $event->connection,
             $event->queue,
-            $event->oldestJobAge,
+            $event->signalSeconds(), // p95 pickup when measured, oldest age otherwise
             $event->slaTarget,
             $event->pending,
             $event->activeWorkers,

@@ -12,8 +12,8 @@ All live in `Cbox\LaravelQueueAutoscale\Events`. See [Event Handling](../basic-u
 |---|---|---|
 | `ScalingDecisionMade` | Every cycle | `$decision` |
 | `SlaBreachPredicted` | Every cycle during risk | `$decision` |
-| `SlaBreached` | Once per state transition | `$connection`, `$queue`, `$oldestJobAge`, `$slaTarget`, `$pending`, `$activeWorkers` |
-| `SlaRecovered` | Once per state transition | `$connection`, `$queue`, `$currentJobAge`, `$slaTarget`, `$pending`, `$activeWorkers` |
+| `SlaBreached` | Once per state transition | `$connection`, `$queue`, `$oldestJobAge`, `$slaTarget`, `$pending`, `$activeWorkers`, `$slaSignal` |
+| `SlaRecovered` | Once per state transition | `$connection`, `$queue`, `$currentJobAge`, `$slaTarget`, `$pending`, `$activeWorkers`, `$slaSignal` |
 | `WorkersScaled` | Per spawn/terminate action | `$connection`, `$queue`, `$from`, `$to`, `$action`, `$reason` |
 | `WorkerExited` | Once per worker process the manager finds has ended, including during shutdown (since 4.4) | `$connection`, `$queue`, `$group`, `$pid`, `$exitCode`, `$termSignal`, `$terminationRequested`, `$uptimeSeconds`, `$graceful` |
 | `ClusterScalingSignalUpdated` | When the leader publishes a new host scaling signal | `$clusterId`, `$leaderId`, `$currentHosts`, `$recommendedHosts`, `$currentCapacity`, `$requiredWorkers`, `$action`, `$reason` |
@@ -22,6 +22,36 @@ All live in `Cbox\LaravelQueueAutoscale\Events`. See [Event Handling](../basic-u
 | `ClusterLeaderChanged` | When a manager observes the cluster leader change | `$clusterId`, `$previousLeaderId`, `$currentLeaderId`, `$observedByManagerId`, `$changedAt` |
 | `ClusterManagerPresenceChanged` | When the leader observes managers join/leave the active set | `$clusterId`, `$managerIds`, `$addedManagerIds`, `$removedManagerIds`, `$leaderId`, `$observedByManagerId`, `$observedAt` |
 | `ClusterSummaryPublished` | When the leader publishes a fresh cluster summary | `$clusterId`, `$leaderId`, `$summary`, `$publishedAt` |
+
+### `SlaBreached` / `SlaRecovered` fields
+
+| Property | Type | Meaning |
+|---|---|---|
+| `$connection` | `string` | Queue connection |
+| `$queue` | `string` | Queue name, or the group name for a group |
+| `$oldestJobAge` / `$currentJobAge` | `int` | The oldest pending job's age as the driver reported it. Always `0` on Amazon SQS |
+| `$slaTarget` | `int` | `sla.target_seconds` |
+| `$pending` | `int` | Pending jobs when the transition was observed |
+| `$activeWorkers` | `int` | Workers on the workload when the transition was observed |
+| `$slaSignal` | `?SlaSignal` | The number the transition was decided on (since 4.5). `null` only on an event constructed by hand |
+
+`signalSeconds()` returns `$slaSignal->seconds`, or the job age when there is no signal.
+`breachSeconds()` (rounded up), `breachPercentage()`, `marginSeconds()` (rounded down) and
+`marginPercentage()` are computed from it.
+
+`SlaSignal` (`Cbox\LaravelQueueAutoscale\Scaling\SlaSignal`, readonly):
+
+| Member | Meaning |
+|---|---|
+| `float $seconds` | The measured wait |
+| `SlaSignalSource $source` | `PickupPercentile` (`'pickup_percentile'`), `OldestJobAgeFallback` (`'oldest_job_age_fallback'`, too few samples) or `OldestJobAge` (`'oldest_job_age'`, a strategy that measures no pickups) |
+| `?int $percentile` | The configured `sla.percentile` when the source is `PickupPercentile` |
+| `isBreaching(int $target): bool` | `seconds > 0 && seconds >= $target` |
+| `isWarning(int $target): bool` | Over 80% of the target without breaching |
+| `isInconclusive(int $pending): bool` | A fallback reading of 0 with jobs pending; holds an open breach |
+| `describe(): string` | `p95 pickup=42.0s` or `oldest_age=42s` |
+
+See [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
 
 ### `WorkerExited` fields
 

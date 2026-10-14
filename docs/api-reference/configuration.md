@@ -56,6 +56,10 @@ public function __construct(
 
 The constructor throws `InvalidConfigurationException` on any violation of those constraints.
 
+The percentile over the window, or the oldest-age fallback, is the workload's SLA signal: the
+default strategy scales on it and the manager decides `SlaBreached` / `SlaRecovered` from it. See
+[How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
+
 ### `WorkerConfiguration`
 
 ```php

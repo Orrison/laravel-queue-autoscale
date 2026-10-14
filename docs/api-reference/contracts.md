@@ -37,6 +37,31 @@ interface ScalingStrategyContract
 
 There is no `PredictiveStrategy`.
 
+### `SlaSignalStrategy`
+
+Opt-in extension of `ScalingStrategyContract` (since 4.5) for a strategy that reports the SLA signal
+it scaled on. When the configured strategy implements it, `SlaBreached`, `SlaRecovered`, the
+console's breached/warning status and the cluster leader's breach state are judged on that signal.
+It is not bound in the container: the manager checks whether the bound strategy implements it.
+
+```php
+namespace Cbox\LaravelQueueAutoscale\Contracts;
+
+interface SlaSignalStrategy extends ScalingStrategyContract
+{
+    // The signal behind the most recent calculateTargetWorkers() call, or null for none.
+    public function getLastSlaSignal(): ?SlaSignal;
+}
+```
+
+A strategy that implements only `ScalingStrategyContract`, or returns `null`, is judged on the
+oldest job's age (`SlaSignalSource::OldestJobAge`), exactly as before 4.5. Pinned workloads never
+run the strategy; when it implements this interface they are measured with `SlaSignalResolver` —
+the shipped percentile-or-oldest-age measurement — otherwise on the oldest job's age.
+
+**Shipped implementation:** `HybridStrategy`. The other three shipped strategies do not implement
+it. See [Custom Strategies](../advanced-usage/custom-strategies.md#reporting-an-sla-signal).
+
 ### `ScalingPolicy`
 
 Hook into scaling decisions. Policies run in the order declared in `queue-autoscale.policies`. Return a modified `ScalingDecision` from `beforeScaling()` to alter the outcome; return `null` to pass through.

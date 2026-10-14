@@ -23,7 +23,9 @@ Find your symptom in the list below, then follow the diagnosis steps in order. E
 - [Two autoscalers are fighting each other](#two-autoscalers-are-fighting-each-other)
 - [Scale-up stopped in a container while memory looks free](#scale-up-stopped-in-a-container-while-memory-looks-free)
 - [The container is OOM-killed, or capacity is held after an OOM kill](#the-container-is-oom-killed-or-capacity-is-held-after-an-oom-kill)
-- [On SQS, pickup time is never measured and `SlaBreached` never fires](#on-sqs-pickup-time-is-never-measured-and-slabreached-never-fires)
+- [On SQS, `SlaBreached` never fires](#on-sqs-slabreached-never-fires)
+- [`SlaRecovered` fires minutes after the backlog cleared](#slarecovered-fires-minutes-after-the-backlog-cleared)
+- [`SlaBreached` fires while the oldest job is young, or not while it is old](#slabreached-fires-while-the-oldest-job-is-young-or-not-while-it-is-old)
 - [`queue:autoscale:doctor` warns about the pickup sample cap](#queueautoscaledoctor-warns-about-the-pickup-sample-cap)
 - [A queue on a `sync` connection is not supervised](#a-queue-on-a-sync-connection-is-not-supervised)
 
@@ -259,14 +261,26 @@ To stop the kills rather than the hold:
 
 `QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS=0` disables the hold. On cgroup v1 the hold needs Linux 4.13 or later and `cboxdk/system-metrics` 3.1 or later; outside Linux cgroups it never triggers.
 
-## On SQS, pickup time is never measured and `SlaBreached` never fires
+## On SQS, `SlaBreached` never fires
 
-SQS cannot report the age of its oldest message, and `SlaBreached` / `SlaRecovered` are decided from that age, so on SQS they never fire. The pickup-time SLA has to come from pickup samples, which need both:
+SQS cannot report the age of its oldest message — it always reads 0 — so on SQS a queue's SLA is judged on its measured pickup time alone. If no pickup samples reach the manager, a queue there is judged on that 0 and never breaches. Samples need both:
 
 - `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` — only Horizon writes `pushedAt`, and Horizon does not run on SQS.
 - A shared store: `QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis` on a single host (cluster mode already uses Redis).
 
-On 4.3 and earlier, samples on SQS were also recorded under the queue URL, where the manager never looked; upgrade to 4.4. Do not include the connection's `suffix` in a queue's name. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
+Check with `php artisan queue:autoscale -vv` while the queue has a backlog: the decision reason should show `p95=…`, not `oldest_age=0.0s`. If it shows `p95` but the queue is under `sla.min_samples` for part of the time, lower `sla.min_samples` for that queue so the window fills at its throughput.
+
+On 4.4 the samples arrived but breach was still decided from the oldest job's age, so `SlaBreached` could not fire on SQS even then; upgrade to 4.5. On 4.3 and earlier, samples on SQS were also recorded under the queue URL, where the manager never looked. Do not include the connection's `suffix` in a queue's name. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
+
+## `SlaRecovered` fires minutes after the backlog cleared
+
+Expected when the queue is judged on its pickup percentile. The percentile covers every pickup in the last `sla.window_seconds`, so the slow pickups from the breach keep it high until they age out of the window or are outnumbered by fast ones. Recovery can trail the backlog by up to one window — 300 seconds by default, 900 on the background profile. Shorten `sla.window_seconds` for faster recovery at the cost of a noisier signal. See [How breach is decided](monitoring.md#how-breach-is-decided).
+
+A breach is also held, not recovered, while the window has fewer than `sla.min_samples` pickups and the oldest-age fallback reads 0 with jobs still pending — on SQS that is what a stalled queue looks like. It recovers once the queue is empty or the percentile is measurable again and under the target.
+
+## `SlaBreached` fires while the oldest job is young, or not while it is old
+
+When a queue has at least `sla.min_samples` pickups in its window, breach is judged on the pickup percentile — the same number the strategy scales on — not on the oldest job's age. A p95 over the target is a breach however young the head of the queue is, and a single straggler does not breach a queue whose p95 is inside the target. Read `$event->slaSignal` (or `signalSeconds()`) to see the number a breach was decided on; `oldestJobAge` is only the driver's raw reading.
 
 ## `queue:autoscale:doctor` warns about the pickup sample cap
 

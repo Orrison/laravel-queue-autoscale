@@ -57,7 +57,9 @@ class QueueSlaBreachedNotification extends Notification
             ->error()
             ->subject("[Queue SLA breach] {$e->connection}:{$e->queue}")
             ->line("Queue `{$e->connection}:{$e->queue}` is breaching its SLA.")
-            ->line("Oldest pending job: **{$e->oldestJobAge}s** (target: {$e->slaTarget}s)")
+            // signalSeconds(): the p95 pickup time the breach was decided on, or the
+            // oldest job's age when too few pickups were measured (always 0 on SQS).
+            ->line(sprintf('Jobs are waiting: **%.1fs** (target: %ds)', $e->signalSeconds(), $e->slaTarget))
             ->line("Pending jobs: **{$e->pending}**")
             ->line("Active workers: **{$e->activeWorkers}**")
             ->line('The autoscaler has been asked to scale up, but spawning new workers may take a few seconds. If the breach persists, check worker capacity and any upstream incidents.');

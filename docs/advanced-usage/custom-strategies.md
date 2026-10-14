@@ -328,7 +328,8 @@ rate from `ArrivalRateEstimator` (used only when its reported confidence clears
 `queue-autoscale.scaling.min_arrival_rate_confidence` — not present in the published config file, so
 the `0.5` default applies until you add the key), retry-noise correction when
 `failureRate > 5.0`, an effective SLA reduced by measured spawn latency, a p95 pickup-time signal
-from the `PickupTimeStore` over `sla.window_seconds`, then
+from the `PickupTimeStore` over `sla.window_seconds` (reported through `getLastSlaSignal()`, so
+breach state is judged on it too), then
 `max(steadyState, backlogDrain)`, a saturation boost when `utilizationRate >= 90.0`, clamping to
 `[workers.min, workers.max]`, and finally `TargetSmoother` hysteresis.
 
@@ -347,6 +348,75 @@ public function __construct(
 ) {}
 ```
 
+## Reporting an SLA signal
+
+`SlaBreached`, `SlaRecovered` and the console's breached/warning status are decided from an **SLA
+signal**. A strategy that implements only `ScalingStrategyContract` is judged on the oldest pending
+job's age — which some drivers, Amazon SQS among them, cannot report. If your strategy measures how
+long jobs actually wait, implement `SlaSignalStrategy` as well, so breach is judged on the number
+you scaled on:
+
+```php
+use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
+use Cbox\LaravelQueueAutoscale\Contracts\SlaSignalStrategy;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalResolver;
+use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
+
+class PickupAwareStrategy implements SlaSignalStrategy
+{
+    private ?SlaSignal $lastSignal = null;
+
+    private string $lastReason = '';
+
+    public function __construct(
+        private readonly SlaSignalResolver $signals,
+    ) {}
+
+    public function calculateTargetWorkers(QueueMetricsData $metrics, QueueConfiguration $config): int
+    {
+        // p95 pickup over sla.window_seconds, or the oldest job's age when the
+        // window holds fewer than sla.min_samples — the shipped measurement.
+        $this->lastSignal = $this->signals->resolve($metrics, $config);
+
+        $behind = $this->lastSignal->seconds / max($config->sla->targetSeconds, 1);
+        $target = (int) ceil(max($metrics->activeWorkers, 1) * max($behind, 0.5));
+        $this->lastReason = "{$this->lastSignal->describe()} against {$config->sla->targetSeconds}s";
+
+        return max($config->workers->min, min($config->workers->max, $target));
+    }
+
+    public function getLastSlaSignal(): ?SlaSignal
+    {
+        return $this->lastSignal;
+    }
+
+    public function getLastReason(): string
+    {
+        return $this->lastReason;
+    }
+
+    public function getLastPrediction(): ?float
+    {
+        return null;
+    }
+}
+```
+
+Rules the manager relies on:
+
+- **Set it on every call, before returning.** It is read straight after `calculateTargetWorkers()`
+  for the same workload, like `getLastReason()`. A strategy is a singleton evaluating every queue,
+  so a value left over from the previous queue would judge this one on someone else's wait.
+- **Return `null` to fall back.** The workload is then judged on the oldest job's age.
+- **Build it with the factories:** `SlaSignal::fromPickupPercentile($seconds, $percentile)` for a
+  measured wait, `SlaSignal::fromOldestJobAgeFallback($age)` when you fell back to the age because
+  the measurement was unavailable. Only that fallback source lets the manager hold an open breach
+  through a zero reading with jobs still pending — see
+  [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
+- **Pinned workloads skip the strategy.** For those the manager measures with `SlaSignalResolver`
+  directly, so a strategy with its own, different measurement is judged on the shipped one there.
+
 ## What happens to your number
 
 `ScalingEngine::evaluate()` takes your return value and, in order:
@@ -355,12 +425,14 @@ public function __construct(
    (`capacityResult->finalMaxWorkers - workers used by other queues`).
 2. Clamps to `[workers.min, workers.max]`.
 3. Applies the failure-fuse ceiling if the fuse is open.
-4. Builds the `ScalingDecision`, attaching `getLastPrediction()` as `predictedPickupTime` and
-   `sla.targetSeconds` as `slaTarget`.
+4. Builds the `ScalingDecision`, attaching `getLastPrediction()` as `predictedPickupTime`,
+   `sla.targetSeconds` as `slaTarget`, and — when your strategy implements `SlaSignalStrategy` —
+   `getLastSlaSignal()` as `slaSignal` (the oldest job's age otherwise).
 
 Clamping in your strategy is still worth doing — it keeps `getLastReason()` honest — but the engine
-is the authority. In cluster mode the leader calls `evaluateDemand()` instead, which applies only
-config bounds and the fuse, so your raw demand number is what the cluster fair-share allocator sees.
+is the authority. In cluster mode the leader calls `assessDemand()` instead (the same calculation as
+`evaluateDemand()`, returned with the SLA signal), which applies only config bounds and the fuse, so
+your raw demand number is what the cluster fair-share allocator sees.
 
 ## Testing
 

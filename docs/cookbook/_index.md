@@ -34,8 +34,8 @@ All three transport recipes use the built-in `AlertRateLimiter` so you don't get
 
 | Event | When | Fires |
 |---|---|---|
-| `SlaBreached` | Oldest job age ≥ SLA target | Once on state entry |
-| `SlaRecovered` | Oldest job age drops below SLA target | Once on state exit |
+| `SlaBreached` | SLA signal (p95 pickup time, else oldest job age) ≥ SLA target | Once on state entry |
+| `SlaRecovered` | SLA signal drops below SLA target | Once on state exit |
 | `SlaBreachPredicted` | Forecaster predicts pickup time will exceed SLA | Per evaluation cycle during risk |
 | `WorkersScaled` | Workers spawn or terminate | Per scaling action |
 | `ScalingDecisionMade` | Any scaling decision (including HOLD) | Per evaluation cycle |

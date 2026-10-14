@@ -121,7 +121,8 @@ counts are derived; the SLA is the thing an operator states and an alert can be 
  5. if arrivalRate == 0: estimateFallbackArrivalRate(...)
  6. subtract retry noise when failureRate > 5%
  7. effectiveSla   = max(1.0, sla.target_seconds - spawnLatency)
- 8. slaSignal      = p95 pickup time, else metrics.oldestJobAge
+ 8. slaSignal      = SlaSignalResolver::resolve(metrics, config)
+                     → p95 pickup time, else metrics.oldestJobAge (reported via getLastSlaSignal())
  9. steadyState    = littles.calculate(arrivalRate, avgJobTime)
 10. backlogDrain   = backlog.calculateRequiredWorkers(pending, (int) slaSignal,
                          sla.target_seconds, avgJobTime, breachThreshold, effectiveSla)
@@ -200,7 +201,7 @@ target snaps back up on the next tick.
 | `arrivalRate` | `ArrivalRateEstimator` + forecast blend | Gated by `scaling.min_arrival_rate_confidence` (0.5) |
 | `avgJobTime` | `metrics.avgDuration` in seconds | Accepted only within `[0.01, 600]`, else `scaling.fallback_job_time_seconds` (2.0) |
 | `effectiveSla` | `sla.target_seconds` minus EMA spawn latency | Only when `spawn_compensation.enabled`; floored at 1.0 s |
-| `slaSignal` | `PickupTimeStore` percentile | `sla.percentile` over `sla.window_seconds`, needs `sla.min_samples`; falls back to `metrics.oldestJobAge` |
+| `slaSignal` | `PickupTimeStore` percentile, via `SlaSignalResolver` | `sla.percentile` over `sla.window_seconds`, needs `sla.min_samples`; falls back to `metrics.oldestJobAge`. Reported on `ScalingDecision::$slaSignal` and used for breach state |
 | `utilizationRate` | metrics | Drives the saturation boost |
 | `failureRate` | metrics (lifetime) | Drives retry-noise subtraction and, separately, the fuse uses its own window |
 
@@ -232,7 +233,7 @@ ScalingEngine::evaluate()
     │
     ▼
 AutoscaleManager
-    ├─ SLA breach check + anti-flapping cooldown (may return early)
+    ├─ SLA breach check on decision->slaSignal + anti-flapping cooldown (may return early)
     ├─ PolicyExecutor::beforeScaling(decision) -> possibly modified decision
     ├─ scaleUp() / scaleDown() / no action
     ├─ PolicyExecutor::afterScaling(finalDecision)
@@ -248,7 +249,10 @@ unconstrained), or the capacity result's own `'cpu'` / `'memory'` / `'balanced'`
 
 `ScalingEngine::evaluateDemand()` — the cluster-leader path — runs the strategy, config bounds and
 the fuse, but **not** the system-capacity constraint: local CPU and memory say nothing about
-cluster-wide demand.
+cluster-wide demand. The leader calls `assessDemand()`, which returns the same target together with
+the strategy's SLA signal in a `DemandAssessment`, so it judges breach on the number the demand was
+computed from. Pinned workloads skip the strategy; `measureSlaSignal()` measures them the same way
+when the strategy implements `SlaSignalStrategy`, and from the oldest job's age otherwise.
 
 ## Component map
 
@@ -559,7 +563,7 @@ via the container, so constructor injection works.
 Event::listen(ScalingDecisionMade::class, fn ($event) => /* $event->decision */);
 Event::listen(WorkersScaled::class, fn ($event) => /* connection, queue, from, to, action, reason */);
 Event::listen(SlaBreachPredicted::class, fn ($event) => /* $event->decision */);
-Event::listen(SlaBreached::class, fn ($event) => /* connection, queue, oldestJobAge, slaTarget, pending, activeWorkers */);
+Event::listen(SlaBreached::class, fn ($event) => /* connection, queue, oldestJobAge, slaTarget, pending, activeWorkers, slaSignal */);
 Event::listen(FuseTripped::class, fn ($event) => /* connection, queue, failureRate, samples, ... */);
 ```
 

@@ -69,6 +69,8 @@ class LogQueueAlerts
             'connection' => $event->connection,
             'queue' => $event->queue,
             'oldest_job_age_seconds' => $event->oldestJobAge,
+            'sla_signal_seconds' => $event->signalSeconds(),
+            'sla_signal' => $event->slaSignal?->describe(),
             'sla_target_seconds' => $event->slaTarget,
             'pending_jobs' => $event->pending,
             'active_workers' => $event->activeWorkers,
@@ -81,6 +83,7 @@ class LogQueueAlerts
             'connection' => $event->connection,
             'queue' => $event->queue,
             'current_job_age_seconds' => $event->currentJobAge,
+            'sla_signal_seconds' => $event->signalSeconds(),
             'sla_target_seconds' => $event->slaTarget,
         ]);
     }

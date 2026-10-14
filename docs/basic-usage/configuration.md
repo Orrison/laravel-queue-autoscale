@@ -140,7 +140,7 @@ A fully-resolved queue configuration has five sections. You rarely need to see a
         'percentile' => 99,          // which percentile to measure against (50–99)
         'window_seconds' => 120,     // rolling window for the percentile
         'min_samples' => 20,         // below this many samples we fall back to oldest_job_age
-    ],
+    ],                               // the same signal decides SlaBreached / SlaRecovered
     'forecast' => [
         'forecaster' => \Cbox\LaravelQueueAutoscale\Scaling\Calculators\LinearRegressionForecaster::class,
         'policy' => \Cbox\LaravelQueueAutoscale\Scaling\Forecasting\Policies\AggressiveForecastPolicy::class,
