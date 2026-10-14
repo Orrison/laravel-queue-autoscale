@@ -219,6 +219,7 @@ How common exits read:
 | A job ran past `workers.timeout_seconds`: `queue:work` SIGKILLs itself | `137` | `9` | `false` | `false` |
 | The kernel OOM-killed the worker | `137` | `9` | `false` | `false` |
 | The worker ignored SIGTERM past its shutdown timeout and the manager SIGKILLed it | `137` | `9` | `true` | `false` |
+| The worker process exited on the manager's SIGTERM instead of handling it | `143` | `15` | `true` | `false` |
 | A fatal error or uncaught exception outside a job | `255` (or `1`) | `null` | `false` | `false` |
 
 A SIGKILL with `$terminationRequested` false is either a job timeout or something outside the manager, most often the OOM killer. The two are told apart by the log: `queue:work` reports the timeout before it kills itself, and the kernel logs the OOM kill (`dmesg`, or the container's OOM kill counter). See [Troubleshooting](troubleshooting.md#workers-spawn-but-die-within-seconds).

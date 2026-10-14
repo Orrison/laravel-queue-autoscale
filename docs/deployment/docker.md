@@ -84,6 +84,10 @@ before the kubelet sends SIGKILL.
 
 For cluster mode, multiple replicas are valid. Each replica still runs exactly one local `queue:autoscale` process, and cluster coordination happens through Redis.
 
+Give the container its own memory limit (`resources.limits.memory` in Kubernetes, `mem_limit` in
+Compose) so the manager sizes its workers against it. With a pod- or task-level limit only, set
+`QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`. See [Kubernetes and Amazon ECS](kubernetes-ecs.md).
+
 ## Zero-downtime deploys
 
 With Compose, `docker compose up -d queue-autoscale` stops the current container (SIGTERM, graceful shutdown, new workers spawned by old manager exit cleanly) and starts the new one (which picks up current state from Redis — no warm-up gap).

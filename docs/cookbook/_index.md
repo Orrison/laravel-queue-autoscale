@@ -23,6 +23,13 @@ All three transport recipes use the built-in `AlertRateLimiter` so you don't get
 
 - [Export Cluster Metrics](cluster-metrics-export.md) — expose `clusterMetrics()` and `ClusterScalingSignalUpdated` to Prometheus, dashboards, or `cboxdk/laravel-queue-monitor`
 
+## Queues and Hosts
+
+- [Scaling FIFO Queues](fifo-queues.md) — why message groups, not workers, cap a FIFO queue's parallelism
+- [Respect a Per-Tenant Connection Limit](per-tenant-connection-limits.md) — cap workers per tenant queue with patterns
+- [Drive Host Autoscaling](host-autoscaling.md) — feed the cluster's host recommendation to KEDA or AWS Auto Scaling
+- [Running on Amazon SQS](../deployment/amazon-sqs.md) — queue names, suffixes and pickup-time samples on SQS
+
 ## Events the autoscaler emits
 
 | Event | When | Fires |
@@ -32,6 +39,7 @@ All three transport recipes use the built-in `AlertRateLimiter` so you don't get
 | `SlaBreachPredicted` | Forecaster predicts pickup time will exceed SLA | Per evaluation cycle during risk |
 | `WorkersScaled` | Workers spawn or terminate | Per scaling action |
 | `ScalingDecisionMade` | Any scaling decision (including HOLD) | Per evaluation cycle |
+| `WorkerExited` | A worker process ended: stopped, recycled, crashed or killed | Once per worker exit |
 | `FuseTripped` | Failure rate crosses the threshold, scaling held at `workers.min` | Once on state entry |
 | `FuseProbing` | Cooldown elapsed, a probe tests for recovery | Once per probe |
 | `FuseRecovered` | Probe succeeded, normal scaling resumes | Once on state exit |

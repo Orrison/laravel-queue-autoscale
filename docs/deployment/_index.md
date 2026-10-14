@@ -1,6 +1,6 @@
 ---
 title: "Deployment"
-description: "Run the Queue Autoscale manager on self-hosted VPS, Laravel Forge, Ploi, or Docker"
+description: "Run the Queue Autoscale manager on a VPS, Forge, Ploi, Docker, Kubernetes or ECS, with Redis, database or Amazon SQS queues"
 weight: 12
 ---
 
@@ -14,6 +14,11 @@ The autoscaler manager (`php artisan queue:autoscale`) is a long-running daemon.
 - [Laravel Forge](forge.md) — one Daemon entry
 - [Ploi](ploi.md) — Daemons panel
 - [Docker / Compose](docker.md) — service with signal forwarding
+- [Kubernetes and Amazon ECS](kubernetes-ecs.md) — pod and task memory limits, the cgroup working set, OOM kills
+
+## Queue backends
+
+- [Running on Amazon SQS](amazon-sqs.md) — queue names and URLs, suffixes, FIFO queues, and the pickup-time samples SQS depends on
 
 ## What they all have in common
 
@@ -33,6 +38,12 @@ During the first few days after deployment, watch for:
   restart re-checks them. Fix the config and redeploy.
 - `Autoscale evaluation failed` — an exception inside one evaluation cycle. The loop catches it and
   continues, so this repeats once per interval until the underlying cause is fixed.
+- `Removed dead worker` — a worker process ended. Logged at `info` when `queue:work` stopped itself
+  cleanly and at `warning` otherwise, with `exit_code`, `term_signal`, `termination_requested` and
+  `uptime_seconds`. A run of warnings with `term_signal` 9 means jobs are timing out or being
+  OOM-killed — see [Troubleshooting](../basic-usage/troubleshooting.md#workers-spawn-but-die-within-seconds).
+- `Kernel OOM-killed processes on this host; holding worker capacity at its current count` — the
+  container hit its memory limit. See [Kubernetes and Amazon ECS](kubernetes-ecs.md#after-an-oom-kill).
 - Nothing at all — the manager may not be running. `ps aux | grep queue:autoscale` on the host.
 
 See [Cookbook → Alert via Log](../cookbook/alert-via-log.md) for a production-ready log-alerting setup.
