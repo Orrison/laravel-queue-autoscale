@@ -5,6 +5,18 @@ All notable changes to `laravel-queue-autoscale` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v4.4.1 - 2026-10-14
+
+### Fixed
+
+- **Container memory is measured by working set, not raw cgroup usage.** Raw cgroup usage (`memory.current` / `memory.usage_in_bytes`) includes page cache the kernel reclaims under pressure. A container writing log files drifted toward its limit, headroom read as zero, and scale-up stopped. The cgroup scope now uses the working set (usage minus `inactive_file`), which is the figure Kubernetes uses, and falls back to raw usage where `memory.stat` can't be read. The host scope already discounted cache through `MemAvailable`.
+- On cgroup v1, OOM-kill backoff now actually triggers. It depends on system-metrics v3.1, which reads the real `oom_kill` counter instead of the `under_oom` flag.
+
+### Upgrading
+
+- `cboxdk/system-metrics` ^3.1 is now a declared dependency. The package always used it directly but only received it through laravel-queue-metrics.
+- Restart every `queue:autoscale` after upgrading.
+
 ## v4.4.0 - 2026-10-14
 
 ### Fixed
@@ -619,6 +631,7 @@ treat it as a list of queues
 
 
 
+
 ```
 For a group the comma is now the separator and each member is validated on its
 own. An injected option inside a member is still caught.
@@ -1051,6 +1064,7 @@ The autoscale manager exits gracefully for a supervised restart when Laravel's n
   
   
   
+  
   ```
 - **`ResourceEstimate` value object** — Carries CPU/memory estimates with per-dimension source metadata (`measured`, `config`, `default`) and sample counts, enabling downstream consumers to inspect provenance.
 - **`EstimateSource` enum** — `Measured`, `Config`, `Default` — tracks where each dimension of a resource estimate originated.
@@ -1369,6 +1383,7 @@ composer require php-tui/php-tui --dev
 
 
 
+
 ```
 ### Usage
 
@@ -1381,6 +1396,7 @@ php artisan queue:autoscale:debug
 
 # Dispatch test jobs
 php artisan queue:autoscale:test --jobs=10 --queue=default
+
 
 
 
@@ -1425,6 +1441,7 @@ First stable release of Queue Autoscale for Laravel with intelligent, predictive
 
 ```bash
 composer require cboxdk/laravel-queue-autoscale
+
 
 
 
