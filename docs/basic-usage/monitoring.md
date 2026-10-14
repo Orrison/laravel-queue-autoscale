@@ -97,6 +97,12 @@ the lowercase forms.
 - `fuse` → the [failure fuse](failure-fuse.md) is holding the queue. Treat as an incident.
 - `system_metrics_unavailable` → the system-metrics read failed and a conservative fallback was used.
 
+When the factor is `memory`, `$capacity->memoryBreakdown()` says why: `scope` is the limit
+`max_memory_percent` applied to (`Configured`, `Cgroup` or `Host`), `cappedBy` a scope with less
+free memory, `settlingWorkers` the booting workers charged their memory up front, and
+`oomBackoffCeiling` a capacity hold after an OOM kill. See
+[Resource Constraints](../algorithms/resource-constraints.md).
+
 ### Predicted pickup time vs. SLA
 
 ```php
@@ -130,6 +136,10 @@ Event::listen(function (SlaBreached $event) {
 ```
 
 `SlaRecovered` has the same shape but with `currentJobAge` instead of `oldestJobAge`, and offers `marginSeconds()` / `marginPercentage()`.
+
+Both are decided from the oldest pending job's age, which some drivers cannot report — Amazon SQS
+among them. On those drivers neither event fires; watch `SlaBreachPredicted` instead, which needs
+pickup samples. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
 
 ### Failure fuse state
 
@@ -174,7 +184,21 @@ $metrics->utilizationRate;      // float percent
 $metrics->activeWorkers;        // int
 ```
 
-There is no worker-health event in this package. the manager's inline liveness check only answers whether a tracked PID is still alive; dead workers are dropped from the pool and, if the target still calls for them, respawned on the next cycle. The respawn shows up as a `WorkersScaled` event.
+### Worker exits
+
+The manager checks each tracked worker every cycle. A worker that has exited is dropped from the pool and reported as a `WorkerExited` event, with its exit code, terminating signal, uptime and whether the manager had asked it to stop; if the target still calls for it, it is respawned on the next cycle, which shows up as a `WorkersScaled` event.
+
+```php
+use Cbox\LaravelQueueAutoscale\Events\WorkerExited;
+
+Event::listen(function (WorkerExited $event) {
+    if (! $event->graceful && ! $event->terminationRequested) {
+        // crashed, timed out, or OOM-killed — count it per queue
+    }
+});
+```
+
+A rising rate of non-graceful exits with signal 9 means jobs are timing out or the host is running out of memory. See [Event Handling](event-handling.md#workerexited) for how to read each exit.
 
 ## Collecting metrics
 
