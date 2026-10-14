@@ -174,3 +174,69 @@ it('clamps memory estimate to minimum of 16 MB', function () {
 
     expect($estimate->memoryMbPerWorker)->toBe(16.0);
 });
+
+it('floors memory at the p90 peak of the workload\'s live workers', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->setMeasuredMemory('redis', 'default', 60.0, 500);
+    $resolver->observeWorkerPeakMemory(['redis:default' => [180.0, 190.0, 240.0]]);
+
+    $estimate = $resolver->resolve('redis', 'default');
+
+    expect($estimate->memoryMbPerWorker)->toBe(240.0)
+        ->and($estimate->memorySource)->toBe(EstimateSource::Measured)
+        ->and($estimate->memorySampleCount)->toBe(3);
+});
+
+it('keeps a higher estimate when workers peak below it', function () {
+    config()->set('queue-autoscale.queues', ['heavy' => ['resources' => ['memory_mb' => 2048]]]);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:heavy' => [300.0]]);
+
+    $estimate = $resolver->resolve('redis', 'heavy');
+
+    expect($estimate->memoryMbPerWorker)->toBe(2048.0)
+        ->and($estimate->memorySource)->toBe(EstimateSource::Config);
+});
+
+it('drops a workload\'s peak once it has no live workers', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:default' => [400.0]]);
+    $resolver->observeWorkerPeakMemory([]);
+
+    expect($resolver->resolve('redis', 'default')->memoryMbPerWorker)->toBe(128.0);
+});
+
+it('floors the host estimate at the p90 peak across every live worker', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+
+    $resolver = new ResourceEstimateResolver;
+
+    expect($resolver->hostEstimate()->memoryMbPerWorker)->toBe(128.0);
+
+    $resolver->observeWorkerPeakMemory([
+        'redis:default' => array_fill(0, 9, 150.0),
+        'redis:reports' => [600.0],
+    ]);
+
+    // p90 of ten workers is the ninth-highest, so one outlier does not set the cost.
+    expect($resolver->hostEstimate()->memoryMbPerWorker)->toBe(150.0)
+        ->and($resolver->hostEstimate()->memorySource)->toBe(EstimateSource::Measured);
+});
+
+it('ignores a workload reported with no worker peaks', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:default' => [], 'redis:other' => [200.0]]);
+
+    expect($resolver->resolve('redis', 'default')->memoryMbPerWorker)->toBe(128.0)
+        ->and($resolver->hostEstimate()->memoryMbPerWorker)->toBe(200.0);
+});

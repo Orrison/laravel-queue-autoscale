@@ -29,6 +29,16 @@ class ResourceEstimateResolver
      */
     private array $measured = [];
 
+    /**
+     * p90 of live workers' peak memory, per workload and across the host.
+     *
+     * @var array<string, array{mb: float, workers: int}>
+     */
+    private array $workerPeakMemory = [];
+
+    /** @var array{mb: float, workers: int}|null */
+    private ?array $hostWorkerPeakMemory = null;
+
     public function resolve(string $connection, string $queue): ResourceEstimate
     {
         $key = "{$connection}:{$queue}";
@@ -43,13 +53,16 @@ class ResourceEstimateResolver
             measuredSamples: $measuredData['cpu_samples'] ?? null,
         );
 
-        // Resolve memory: measured > config > global
+        // Resolve memory: measured > config > global, then never below what
+        // live workers have actually peaked at.
         $memoryResult = $this->resolveDimension(
             measured: $measuredData['memory'] ?? null,
             config: is_numeric($configResources['memory_mb'] ?? null) ? (float) $configResources['memory_mb'] : null,
             default: (float) AutoscaleConfiguration::workerMemoryMbEstimate(),
             measuredSamples: $measuredData['memory_samples'] ?? null,
         );
+
+        $memoryResult = $this->withWorkerPeakFloor($memoryResult, $this->workerPeakMemory[$key] ?? null);
 
         return new ResourceEstimate(
             cpuCoresPerWorker: max($cpuResult['value'], self::MIN_CPU_CORES),
@@ -95,6 +108,79 @@ class ResourceEstimateResolver
     public function reset(): void
     {
         $this->measured = [];
+        $this->workerPeakMemory = [];
+        $this->hostWorkerPeakMemory = null;
+    }
+
+    /**
+     * Record the peak memory of every live worker, keyed by workload
+     * (`connection:queue`, or `connection:group` for group workers). Replaces
+     * the previous observation, so workloads with no live workers drop out.
+     *
+     * @param  array<string, list<float>>  $peakMbByWorkload
+     */
+    public function observeWorkerPeakMemory(array $peakMbByWorkload): void
+    {
+        $this->workerPeakMemory = [];
+        $all = [];
+
+        foreach ($peakMbByWorkload as $key => $peaks) {
+            if ($peaks === []) {
+                continue;
+            }
+
+            $this->workerPeakMemory[$key] = ['mb' => self::p90($peaks), 'workers' => count($peaks)];
+            array_push($all, ...$peaks);
+        }
+
+        $this->hostWorkerPeakMemory = $all === [] ? null : ['mb' => self::p90($all), 'workers' => count($all)];
+    }
+
+    /**
+     * The global default estimate, with memory floored at what this host's
+     * workers actually peak at. Used where capacity is sized without a
+     * specific workload, such as the per-host capacity a cluster manager
+     * reports.
+     */
+    public function hostEstimate(): ResourceEstimate
+    {
+        $default = ResourceEstimate::globalDefault();
+        $memory = $this->withWorkerPeakFloor(
+            ['value' => $default->memoryMbPerWorker, 'source' => $default->memorySource, 'samples' => null],
+            $this->hostWorkerPeakMemory,
+        );
+
+        return new ResourceEstimate(
+            cpuCoresPerWorker: $default->cpuCoresPerWorker,
+            memoryMbPerWorker: max($memory['value'], self::MIN_MEMORY_MB),
+            cpuSource: $default->cpuSource,
+            memorySource: $memory['source'],
+            memorySampleCount: $memory['samples'],
+        );
+    }
+
+    /**
+     * @param  array{value: float, source: EstimateSource, samples: int|null}  $memory
+     * @param  array{mb: float, workers: int}|null  $peak
+     * @return array{value: float, source: EstimateSource, samples: int|null}
+     */
+    private function withWorkerPeakFloor(array $memory, ?array $peak): array
+    {
+        if ($peak === null || $peak['mb'] <= $memory['value']) {
+            return $memory;
+        }
+
+        return ['value' => $peak['mb'], 'source' => EstimateSource::Measured, 'samples' => $peak['workers']];
+    }
+
+    /**
+     * @param  non-empty-list<float>  $values
+     */
+    private static function p90(array $values): float
+    {
+        sort($values);
+
+        return $values[max((int) ceil(count($values) * 0.9) - 1, 0)];
     }
 
     /**
