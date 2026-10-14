@@ -115,3 +115,21 @@ test('binds the null store when the fuse is disabled globally', function (): voi
 
     expect($store)->toBeInstanceOf(NullFailureWindowStore::class);
 });
+
+test('records SQS job outcomes under the queue name, not the queue URL', function (): void {
+    // SqsJob::getQueue() is the full URL; the fuse evaluates by queue name.
+    $queueUrl = 'https://sqs.us-east-1.amazonaws.com/123456789012/emails';
+
+    event(new JobProcessed('sqs', fakeJob($queueUrl)));
+    event(new JobExceptionOccurred('sqs', fakeJob($queueUrl), new RuntimeException('downstream down')));
+
+    expect($this->store->currentWindow('sqs', 'emails', 60))->toBe(['total' => 2, 'failures' => 1]);
+});
+
+test('excludes an SQS queue by its name', function (): void {
+    config()->set('queue-autoscale.excluded', ['horizon-*']);
+
+    event(new JobProcessed('sqs', fakeJob('https://sqs.us-east-1.amazonaws.com/123456789012/horizon-notifications')));
+
+    expect($this->store->recorded)->toBeEmpty();
+});

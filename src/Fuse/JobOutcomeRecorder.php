@@ -9,6 +9,7 @@ use Cbox\LaravelQueueAutoscale\Configuration\GroupConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\FailureClassifierContract;
 use Cbox\LaravelQueueAutoscale\Contracts\FailureWindowStoreContract;
+use Cbox\LaravelQueueAutoscale\Support\QueueName;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobProcessed;
 
@@ -44,13 +45,15 @@ class JobOutcomeRecorder
 
     public function handleProcessed(JobProcessed $event): void
     {
-        $this->record($event->connectionName, $event->job->getQueue() ?: 'default', failed: false);
+        $connection = $event->connectionName;
+
+        $this->record($connection, QueueName::normalize($connection, $event->job->getQueue() ?: 'default'), failed: false);
     }
 
     public function handleException(JobExceptionOccurred $event): void
     {
         $connection = $event->connectionName;
-        $queue = $event->job->getQueue() ?: 'default';
+        $queue = QueueName::normalize($connection, $event->job->getQueue() ?: 'default');
 
         // A classified-out exception is dropped entirely rather than recorded
         // as a success: it says nothing about whether the dependency is
