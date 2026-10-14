@@ -6,6 +6,7 @@ use Cbox\LaravelQueueAutoscale\Cluster\ClusterManagerState;
 use Cbox\LaravelQueueAutoscale\Configuration\Profiles\ConnectionLimitedProfile;
 use Cbox\LaravelQueueAutoscale\Contracts\ClusterStoreContract;
 use Cbox\LaravelQueueAutoscale\Testing\InMemoryFailureWindowStore;
+use Cbox\LaravelQueueAutoscale\Testing\InMemoryPickupTimeStore;
 use Cbox\LaravelQueueAutoscale\Testing\InteractsWithAutoscaling;
 use Cbox\LaravelQueueAutoscale\Testing\QueueMetricsFactory;
 
@@ -132,4 +133,54 @@ test('the metrics factory distinguishes a full queue from a late one', function 
     expect($backlogged->pending)->toBe($behind->pending)
         ->and($backlogged->oldestJobAge)->toBeLessThan($behind->oldestJobAge)
         ->and($behind->ageStatus)->toBe('critical');
+});
+
+test('a consumer can assert an SQS queue breaches on its measured pickup time', function (): void {
+    config()->set('queue-autoscale.queues', [
+        'orders' => ['sla' => ['target_seconds' => 30, 'min_samples' => 5]],
+    ]);
+
+    $pickups = $this->fakePickupTimes();
+    $queue = QueueMetricsFactory::onSqs(200, 'orders');
+
+    // SQS reports no oldest-job age, so with no pickups measured there is
+    // nothing to breach on.
+    $this->assertWithinSla($queue);
+
+    $pickups->seedRepeated(20, 45.0, 'sqs', 'orders');
+
+    $this->assertBreachesSla($queue);
+    expect($this->slaSignalFor($queue)->describe())->toBe('p95 pickup=45.0s');
+});
+
+test('the SQS metrics factory models a driver without an oldest-job age', function (): void {
+    $sqs = QueueMetricsFactory::onSqs(300, 'orders', activeWorkers: 4);
+
+    expect($sqs->connection)->toBe('sqs')
+        ->and($sqs->driver)->toBe('sqs')
+        ->and($sqs->queue)->toBe('orders')
+        ->and($sqs->pending)->toBe(300)
+        ->and($sqs->oldestJobAge)->toBe(0)
+        ->and($sqs->activeWorkers)->toBe(4);
+});
+
+test('the in-memory pickup store ages samples out on the test clock', function (): void {
+    Carbon\Carbon::setTestNow(Carbon\Carbon::parse('2026-10-14 09:00:00'));
+
+    $store = new InMemoryPickupTimeStore;
+    $store->seed([1.0, 2.0], 'sqs', 'orders');
+
+    expect($store->recentSamples('sqs', 'orders', 60))->toHaveCount(2)
+        ->and($store->recentSamples('sqs', 'other', 60))->toBe([]);
+
+    Carbon\Carbon::setTestNow(now()->addSeconds(61));
+
+    expect($store->recentSamples('sqs', 'orders', 60))->toBe([]);
+
+    $store->seedRepeated(3, 4.0, 'sqs', 'orders');
+    $store->clear('sqs', 'orders');
+
+    expect($store->recentSamples('sqs', 'orders', 600))->toBe([]);
+
+    Carbon\Carbon::setTestNow();
 });

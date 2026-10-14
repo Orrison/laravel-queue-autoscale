@@ -5,6 +5,8 @@ declare(strict_types=1);
 use Cbox\LaravelQueueAutoscale\Cluster\EvaluatedWorkload;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\WorkerConfiguration;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalSource;
 
 function evaluatedWorkload(array $overrides = []): EvaluatedWorkload
 {
@@ -17,6 +19,7 @@ function evaluatedWorkload(array $overrides = []): EvaluatedWorkload
         currentWorkers: $overrides['currentWorkers'] ?? 2,
         metrics: $overrides['metrics'] ?? createMetrics(),
         memberQueues: $overrides['memberQueues'] ?? ['default'],
+        slaSignal: $overrides['slaSignal'] ?? null,
     );
 }
 
@@ -98,4 +101,35 @@ test('scalability is the configured flag, not an inference from min equalling ma
 
     expect($equalBounds->isScalable())->toBeTrue()
         ->and($supervised->isScalable())->toBeFalse();
+});
+
+/**
+ * A workload built without a signal — by a consumer, or by code written
+ * before signals existed — is judged exactly as it always was.
+ */
+test('without a signal the workload is judged on the oldest job age', function (): void {
+    $workload = evaluatedWorkload(['metrics' => createMetrics(['oldest_job_age' => 45])]);
+
+    expect($workload->slaSignal())->toEqual(SlaSignal::fromOldestJobAge(45))
+        ->and($workload->isBreaching())->toBeTrue();
+});
+
+test('with a signal the workload is judged on it, not on the oldest job age', function (): void {
+    // SQS: oldest age is always 0, but the measured p95 is far over target.
+    $sqs = evaluatedWorkload([
+        'metrics' => createMetrics(['oldest_job_age' => 0]),
+        'slaSignal' => SlaSignal::fromPickupPercentile(45.0, 95),
+    ]);
+
+    // And the reverse: an old straggler does not breach a queue whose p95
+    // is comfortably inside the target, because the strategy did not scale
+    // on the straggler either.
+    $healthy = evaluatedWorkload([
+        'metrics' => createMetrics(['oldest_job_age' => 120]),
+        'slaSignal' => SlaSignal::fromPickupPercentile(4.0, 95),
+    ]);
+
+    expect($sqs->isBreaching())->toBeTrue()
+        ->and($sqs->slaSignal()->source)->toBe(SlaSignalSource::PickupPercentile)
+        ->and($healthy->isBreaching())->toBeFalse();
 });

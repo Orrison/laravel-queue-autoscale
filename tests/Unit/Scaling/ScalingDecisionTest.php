@@ -6,6 +6,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingScope;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 
 test('creates instance with all properties', function () {
     $decision = new ScalingDecision(
@@ -275,4 +276,17 @@ test('withTargetWorkers keeps the reason when none is given', function () {
     );
 
     expect($decision->withTargetWorkers(7)->reason)->toBe('original');
+});
+
+test('a decision built by hand has no SLA signal', function () {
+    $decision = new ScalingDecision('redis', 'default', 1, 2, 'manual');
+
+    expect($decision->slaSignal)->toBeNull();
+});
+
+test('withTargetWorkers keeps the SLA signal', function () {
+    $signal = SlaSignal::fromPickupPercentile(45.0, 95);
+    $decision = new ScalingDecision('sqs', 'orders', 1, 2, 'engine', slaSignal: $signal);
+
+    expect($decision->withTargetWorkers(5)->slaSignal)->toBe($signal);
 });

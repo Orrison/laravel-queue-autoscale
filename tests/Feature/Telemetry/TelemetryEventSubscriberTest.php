@@ -15,6 +15,7 @@ use Cbox\LaravelQueueAutoscale\Events\WorkersScaled;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 use Cbox\LaravelQueueAutoscale\Telemetry\TelemetryEventSubscriber;
 use Cbox\Telemetry\Facades\Telemetry;
 use Cbox\Telemetry\Metrics\Registry;
@@ -102,6 +103,42 @@ it('sets the breach gauge and counts breaches on sla breach, then clears on reco
 
     expect($this->fake->gaugeValue('queue_autoscale.sla.breach', $labels))->toBe(0.0);
     $this->fake->assertEventEmitted('queue_autoscale.sla.recovered');
+});
+
+it('records the signal an SLA transition was decided on', function () {
+    $this->subscriber->handleSlaBreached(new SlaBreached(
+        connection: 'sqs', queue: 'orders', oldestJobAge: 0, slaTarget: 30, pending: 200, activeWorkers: 2,
+        slaSignal: SlaSignal::fromPickupPercentile(45.0, 95),
+    ));
+
+    $this->fake->assertEventEmitted('queue_autoscale.sla.breached', function ($event): bool {
+        return $event->attributes['oldest_job_age'] === 0
+            && $event->attributes['sla_signal_seconds'] === 45.0
+            && $event->attributes['sla_signal_source'] === 'pickup_percentile'
+            && $event->attributes['breach_seconds'] === 15;
+    });
+
+    $this->subscriber->handleSlaRecovered(new SlaRecovered(
+        connection: 'sqs', queue: 'orders', currentJobAge: 0, slaTarget: 30, pending: 3, activeWorkers: 2,
+        slaSignal: SlaSignal::fromPickupPercentile(6.0, 95),
+    ));
+
+    $this->fake->assertEventEmitted('queue_autoscale.sla.recovered', function ($event): bool {
+        return $event->attributes['sla_signal_seconds'] === 6.0
+            && $event->attributes['sla_signal_source'] === 'pickup_percentile'
+            && $event->attributes['margin_seconds'] === 24;
+    });
+});
+
+it('labels a hand-built SLA event as judged on the oldest job age', function () {
+    $this->subscriber->handleSlaBreached(new SlaBreached(
+        connection: 'redis', queue: 'default', oldestJobAge: 45, slaTarget: 30, pending: 100, activeWorkers: 2,
+    ));
+
+    $this->fake->assertEventEmitted('queue_autoscale.sla.breached', function ($event): bool {
+        return $event->attributes['sla_signal_seconds'] === 45.0
+            && $event->attributes['sla_signal_source'] === 'oldest_job_age';
+    });
 });
 
 it('walks the fuse state gauge through trip, probe and recovery', function () {
