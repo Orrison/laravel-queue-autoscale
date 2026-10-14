@@ -10,6 +10,7 @@ use Cbox\LaravelQueueAutoscale\Workers\WorkerMemoryPeakReader;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerPool;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerProcess;
 use Cbox\SystemMetrics\DTO\Metrics\LimitSource;
+use Cbox\SystemMetrics\DTO\Metrics\Memory\MemorySnapshot;
 use Cbox\SystemMetrics\DTO\Metrics\SystemLimits;
 use Cbox\SystemMetrics\Testing\FakeSystemMetrics;
 use Illuminate\Support\Facades\Event;
@@ -95,19 +96,36 @@ it('reports cluster capacity using what this host\'s workers actually peak at', 
         currentMemoryBytes: 0.0,
     ));
 
+    // Capacity reads the host's own MemTotal/MemAvailable scope: 10 GB, half in use.
+    $fakes->memory->set(new MemorySnapshot(
+        totalBytes: 10_240 * 1024 * 1024,
+        freeBytes: 5_120 * 1024 * 1024,
+        availableBytes: 5_120 * 1024 * 1024,
+        usedBytes: 5_120 * 1024 * 1024,
+        buffersBytes: 0,
+        cachedBytes: 0,
+        swapTotalBytes: 0,
+        swapFreeBytes: 0,
+        swapUsedBytes: 0,
+    ));
+
     $store = (new FakeClusterStore)->withLeader('another-manager');
     app()->instance(ClusterStoreContract::class, $store);
     app()->forgetInstance(AutoscaleManager::class);
 
     try {
         $manager = peakMemoryManager($this);
-        peakMemoryPool($manager)->add(new WorkerProcess(workerWithPeak($this, 'sleep(10);', 1_048_576), 'redis', 'emails', now()));
+
+        // Spawned well outside the settle window, so its memory is already in
+        // the host's usage rather than charged again as a booting worker.
+        peakMemoryPool($manager)->add(new WorkerProcess(workerWithPeak($this, 'sleep(10);', 1_048_576), 'redis', 'emails', now()->subMinutes(5)));
 
         (new ReflectionMethod($manager, 'runClusterCycle'))->invoke($manager);
 
         $reported = collect($store->activeManagers())->first(fn ($state): bool => $state->managerId !== 'another-manager');
 
-        // 35% of 10 GB is 3584 MB of headroom: three more 1 GB workers, not 28 at the 128 MB default.
+        // 85% of 10 GB less the 5 GB in use is 3584 MB of headroom: three more
+        // 1 GB workers, not 28 at the 128 MB default.
         expect($reported->maxWorkers)->toBe(1 + 3);
     } finally {
         FakeSystemMetrics::uninstall();
