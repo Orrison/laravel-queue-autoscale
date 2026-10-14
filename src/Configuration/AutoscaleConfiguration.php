@@ -171,6 +171,18 @@ readonly class AutoscaleConfiguration
         return is_string($configured) ? trim($configured) : 'auto';
     }
 
+    public static function pickupMaxSampleSeconds(): ?float
+    {
+        $configured = config('queue-autoscale.pickup_time.max_sample_seconds', 3600);
+
+        return is_numeric($configured) && (float) $configured > 0 ? (float) $configured : null;
+    }
+
+    public static function stampPushedAt(): bool
+    {
+        return (bool) config('queue-autoscale.pickup_time.stamp_pushed_at', false);
+    }
+
     public static function spawnLatencyTracker(): string
     {
         $configured = config('queue-autoscale.spawn_latency.tracker', 'auto');

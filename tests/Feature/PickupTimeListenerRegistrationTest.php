@@ -48,6 +48,7 @@ test('a processed job records its pickup time through the registered listener', 
     $job = Mockery::mock(Job::class);
     $job->shouldReceive('payload')->andReturn(['pushedAt' => microtime(true) - 3.0]);
     $job->shouldReceive('getQueue')->andReturn('exports');
+    $job->shouldReceive('attempts')->andReturn(1);
 
     event(new JobProcessing('redis', $job));
 

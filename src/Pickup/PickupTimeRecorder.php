@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cbox\LaravelQueueAutoscale\Pickup;
 
+use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
 use Illuminate\Queue\Events\JobProcessing;
 
@@ -23,6 +24,22 @@ class PickupTimeRecorder
             return;
         }
 
+        // A released or retried job keeps its first push's pushedAt, so a later
+        // attempt's sample would include earlier runs and their backoff.
+        if ($event->job->attempts() > 1) {
+            return;
+        }
+
+        $now = microtime(true);
+        $availableAt = (float) $pushedAt + (is_numeric($payload['delay'] ?? null) ? (float) $payload['delay'] : 0.0);
+        $pickupSeconds = max(0.0, $now - $availableAt);
+
+        $maxSampleSeconds = AutoscaleConfiguration::pickupMaxSampleSeconds();
+
+        if ($maxSampleSeconds !== null && $pickupSeconds > $maxSampleSeconds) {
+            return;
+        }
+
         $queue = $event->job->getQueue() ?: 'default';
 
         // Sampled per queue, not per process: a group worker polls several at
@@ -31,9 +48,6 @@ class PickupTimeRecorder
         if (! $this->sampler->shouldRecord($event->connectionName, $queue)) {
             return;
         }
-
-        $now = microtime(true);
-        $pickupSeconds = max(0.0, $now - (float) $pushedAt);
 
         $this->store->record(
             connection: $event->connectionName,

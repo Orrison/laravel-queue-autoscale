@@ -32,13 +32,14 @@ function recordingStore(array &$recorded): PickupTimeStoreContract
     };
 }
 
-function jobProcessing(mixed $pushedAt, ?string $queue = 'default'): JobProcessing
+function jobProcessing(mixed $pushedAt, ?string $queue = 'default', int $attempts = 1, ?int $delay = null): JobProcessing
 {
-    $payload = $pushedAt === null ? ['id' => 'abc'] : ['pushedAt' => $pushedAt];
+    $payload = $pushedAt === null ? ['id' => 'abc'] : ['pushedAt' => $pushedAt, 'delay' => $delay];
 
     $job = Mockery::mock(Job::class);
     $job->shouldReceive('payload')->andReturn($payload);
     $job->shouldReceive('getQueue')->andReturn($queue);
+    $job->shouldReceive('attempts')->andReturn($attempts);
 
     return new JobProcessing('redis', $job);
 }
@@ -132,4 +133,56 @@ test('a job with no pushedAt does not consume sampling budget', function (): voi
     }
 
     expect($sampler->currentSampleRate())->toBe(1.0);
+});
+
+test('measures a delayed job from when it became available, not from dispatch', function (): void {
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 601.0, delay: 600));
+
+    expect($recorded[0]['pickupSeconds'])->toBeGreaterThan(0.9)->toBeLessThan(1.1);
+});
+
+test('never records a negative pickup for a job run before its delay elapsed', function (): void {
+    // Clock skew between dispatcher and worker; never a negative pickup.
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true), delay: 60));
+
+    expect($recorded[0]['pickupSeconds'])->toBe(0.0);
+});
+
+test('skips attempts after the first, which keep the first push\'s pushedAt', function (): void {
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 120.0, attempts: 2));
+
+    expect($recorded)->toHaveCount(0);
+});
+
+test('drops a sample above the configured maximum', function (): void {
+    // A failed job re-pushed with queue:retry starts again at attempt 1 but
+    // keeps its original pushedAt.
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', 3600);
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 86_400.0));
+    $recorder->handle(jobProcessing(microtime(true) - 3_000.0));
+
+    expect($recorded)->toHaveCount(1);
+    expect($recorded[0]['pickupSeconds'])->toBeGreaterThan(2_999.0);
+});
+
+test('keeps every sample when the maximum is disabled', function (): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', null);
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 86_400.0));
+
+    expect($recorded)->toHaveCount(1);
 });
