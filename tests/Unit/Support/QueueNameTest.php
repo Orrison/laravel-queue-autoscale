@@ -39,3 +39,45 @@ test('only the suffix of the job\'s own connection is removed', function (): voi
 test('a URL with no queue in its path is unchanged', function (): void {
     expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com/'))->toBe('https://sqs.us-east-1.amazonaws.com/');
 });
+
+test('a queue named exactly like the suffix is not reduced to nothing', function (string $queue): void {
+    config()->set('queue.connections.sqs.suffix', '-production');
+
+    expect(QueueName::normalize('sqs', $queue))->toBe(basename($queue));
+})->with([
+    'standard queue' => ['https://sqs.us-east-1.amazonaws.com/123456789012/-production'],
+    'fifo queue' => ['https://sqs.us-east-1.amazonaws.com/123456789012/-production.fifo'],
+]);
+
+test('the suffix is only removed from the end of the name', function (): void {
+    config()->set('queue.connections.sqs.suffix', '-production');
+
+    expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com/123456789012/emails-production-eu'))
+        ->toBe('emails-production-eu');
+});
+
+test('an empty or non-string suffix removes nothing', function (mixed $suffix): void {
+    config()->set('queue.connections.sqs.suffix', $suffix);
+
+    expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com/123456789012/emails-production'))
+        ->toBe('emails-production');
+})->with(['empty string' => [''], 'null' => [null], 'array' => [['-production']]]);
+
+test('a plain queue name is never stripped of the suffix, only a URL is', function (): void {
+    // Dispatch and the configuration already use the bare name; a name that
+    // merely ends like the suffix is a different queue.
+    config()->set('queue.connections.sqs.suffix', '-production');
+
+    expect(QueueName::normalize('sqs', 'emails-production'))->toBe('emails-production');
+});
+
+test('a trailing slash or a query string does not hide the queue name', function (string $queue): void {
+    expect(QueueName::normalize('sqs', $queue))->toBe('emails');
+})->with([
+    'trailing slash' => ['https://sqs.us-east-1.amazonaws.com/123456789012/emails/'],
+    'query string' => ['https://sqs.us-east-1.amazonaws.com/123456789012/emails?Action=ReceiveMessage'],
+]);
+
+test('a URL with no path at all is unchanged', function (): void {
+    expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com'))->toBe('https://sqs.us-east-1.amazonaws.com');
+});

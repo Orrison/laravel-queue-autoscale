@@ -46,3 +46,30 @@ test('keeps a pushedAt the payload already carries', function (): void {
 
     expect($stamped)->toBe([]);
 });
+
+test('returns nothing to merge when disabled, even for a payload without pushedAt', function (): void {
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', false);
+
+    expect((new PushedAtStamper)('redis', 'default', ['uuid' => 'abc']))->toBe([]);
+});
+
+test('keeps a pushedAt of zero, which is set even though it is falsy', function (): void {
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', true);
+
+    expect((new PushedAtStamper)('redis', 'default', ['pushedAt' => 0]))->toBe([]);
+});
+
+test('stamps a payload whose pushedAt key is present but null', function (): void {
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', true);
+
+    $stamped = (new PushedAtStamper)('redis', 'default', ['pushedAt' => null]);
+
+    expect($stamped)->toHaveKey('pushedAt')
+        ->and($stamped['pushedAt'])->toBeFloat();
+});
+
+test('reads an env-style string flag as enabled', function (): void {
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', '1');
+
+    expect(dispatchedPayload())->toHaveKey('pushedAt');
+});

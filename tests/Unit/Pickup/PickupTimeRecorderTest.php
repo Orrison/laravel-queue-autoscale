@@ -196,3 +196,55 @@ test('records an SQS job under the queue name, not the queue URL', function (): 
 
     expect($recorded[0]['queue'])->toBe('emails');
 });
+
+test('a maximum of zero or below disables the cap instead of dropping every sample', function (int $max): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', $max);
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 5.0));
+
+    expect($recorded)->toHaveCount(1);
+})->with(['zero' => [0], 'negative' => [-1]]);
+
+test('the cap applies to time since the job became available, not since dispatch', function (): void {
+    // Pushed two hours ago with a two-hour delay: available a second ago.
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', 3600);
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 7_201.0, delay: 7_200));
+
+    expect($recorded)->toHaveCount(1)
+        ->and($recorded[0]['pickupSeconds'])->toBeLessThan(2.0);
+});
+
+test('a numeric-string pushedAt is accepted', function (): void {
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing((string) (microtime(true) - 3.0)));
+
+    expect($recorded)->toHaveCount(1)
+        ->and($recorded[0]['pickupSeconds'])->toBeGreaterThan(2.9)->toBeLessThan(3.1);
+});
+
+test('a non-numeric pushedAt is skipped', function (): void {
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing('yesterday'));
+
+    expect($recorded)->toHaveCount(0);
+});
+
+test('records an SQS job under the name without the connection suffix', function (): void {
+    config()->set('queue.connections.redis.suffix', '-production');
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    // jobProcessing() fires on the 'redis' connection, so its suffix applies.
+    $recorder->handle(jobProcessing(microtime(true) - 1.0, queue: 'https://sqs.us-east-1.amazonaws.com/123456789012/orders-production.fifo'));
+
+    expect($recorded[0]['queue'])->toBe('orders.fifo');
+});
