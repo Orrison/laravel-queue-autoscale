@@ -11,6 +11,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryHeadroom;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScope;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\SettlingWorker;
 use Cbox\SystemMetrics\DTO\Metrics\Cpu\CpuSnapshot;
 use Cbox\SystemMetrics\DTO\Metrics\SystemLimits;
 use Cbox\SystemMetrics\SystemMetrics;
@@ -42,8 +43,16 @@ class CapacityCalculator
      */
     private ?CpuSnapshot $previousCpuSnapshot = null;
 
-    /** @var (Closure(): int)|null */
-    private ?Closure $settlingWorkerCounter = null;
+    /** @var (Closure(): list<SettlingWorker>)|null */
+    private ?Closure $settlingWorkers = null;
+
+    /**
+     * Resident memory of each settling worker, by PID, read alongside the
+     * cached usage — the part of their cost that usage already includes.
+     *
+     * @var array<int, float>
+     */
+    private array $cachedSettlingResidentMb = [];
 
     /** @var (Closure(): int)|null */
     private ?Closure $hostWorkerCounter = null;
@@ -117,14 +126,9 @@ class CapacityCalculator
         $usedMemoryMb = $memory->scope->usedMb;
         $currentMemoryPercent = $totalMemoryMb > 0 ? ($usedMemoryMb / $totalMemoryMb) * 100 : 0.0;
 
-        // A worker that has just started has not yet grown to its footprint, so
-        // its eventual cost is charged now rather than read as free memory.
-        // Counted on every call: workers spawned earlier in the same cycle are
-        // not in the cached usage yet.
-        $settlingWorkers = $this->settlingWorkerCounter !== null
-            ? max(min(($this->settlingWorkerCounter)(), $currentWorkers), 0)
-            : 0;
-        $headroomMb = max($memory->headroomMb - $settlingWorkers * $workerMemoryMb, 0.0);
+        $settling = $this->settlingWorkers($currentWorkers);
+        $settlingWorkers = count($settling);
+        $headroomMb = max($memory->headroomMb - $this->settlingChargeMb($settling, $workerMemoryMb), 0.0);
         $availableMemoryPercent = $totalMemoryMb > 0 ? ($headroomMb / $totalMemoryMb) * 100 : 0.0;
 
         $additionalWorkersByMemory = (int) floor($headroomMb / $workerMemoryMb);
@@ -209,15 +213,71 @@ class CapacityCalculator
     }
 
     /**
-     * Supply how many running workers were spawned too recently to have
-     * reached their memory footprint. The manager owns the pool, so it
-     * provides the count; without a counter none are charged.
+     * Supply the running workers spawned too recently to have reached their
+     * memory footprint. The manager owns the pool, so it provides them;
+     * without a source none are charged.
      *
-     * @param  (Closure(): int)|null  $counter
+     * @param  (Closure(): list<SettlingWorker>)|null  $source
      */
-    public function countSettlingWorkersWith(?Closure $counter): void
+    public function trackSettlingWorkersWith(?Closure $source): void
     {
-        $this->settlingWorkerCounter = $counter;
+        $this->settlingWorkers = $source;
+    }
+
+    /**
+     * Settling workers, read on every call: workers spawned earlier in the
+     * same cycle are not in the cached usage yet. Never more than the workers
+     * the caller says are running.
+     *
+     * @return list<SettlingWorker>
+     */
+    private function settlingWorkers(int $currentWorkers): array
+    {
+        if ($this->settlingWorkers === null) {
+            return [];
+        }
+
+        return array_slice(($this->settlingWorkers)(), 0, max($currentWorkers, 0));
+    }
+
+    /**
+     * Memory still to come from workers that are booting.
+     *
+     * A worker that has just started has not yet grown to its footprint, so
+     * its eventual cost is charged now rather than read as free memory. What
+     * it already holds is in the measured usage, so only the rest is charged;
+     * charging the full estimate would count that part twice for the whole
+     * settle window. A worker spawned after usage was read, or whose resident
+     * memory cannot be read, is charged in full.
+     *
+     * @param  list<SettlingWorker>  $settling
+     */
+    private function settlingChargeMb(array $settling, float $workerMemoryMb): float
+    {
+        $chargeMb = 0.0;
+
+        foreach ($settling as $worker) {
+            $countedMb = $worker->pid !== null ? ($this->cachedSettlingResidentMb[$worker->pid] ?? 0.0) : 0.0;
+            $chargeMb += max($workerMemoryMb - $countedMb, 0.0);
+        }
+
+        return $chargeMb;
+    }
+
+    /**
+     * @return array<int, float>
+     */
+    private function measureSettlingResidentMb(): array
+    {
+        $residentMb = [];
+
+        foreach ($this->settlingWorkers(PHP_INT_MAX) as $worker) {
+            if ($worker->pid !== null && $worker->residentMb !== null) {
+                $residentMb[$worker->pid] = $worker->residentMb;
+            }
+        }
+
+        return $residentMb;
     }
 
     /**
@@ -324,6 +384,7 @@ class CapacityCalculator
         $this->cachedCpuPercent = $this->measureCpuPercent();
 
         $this->cachedMemoryScopes = $this->measureMemoryScopes($limits);
+        $this->cachedSettlingResidentMb = $this->measureSettlingResidentMb();
 
         $containerResult = SystemMetrics::container();
         $this->oomBackoff()->observe($containerResult->isSuccess() ? $containerResult->getValue()->oomKillCount : null);

@@ -6,6 +6,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\SettlingWorker;
 use Cbox\SystemMetrics\DTO\Metrics\Container\CgroupVersion;
 use Cbox\SystemMetrics\DTO\Metrics\Container\ContainerLimits;
 use Cbox\SystemMetrics\DTO\Metrics\LimitSource;
@@ -62,6 +63,14 @@ function cgroupMemory(?int $limitMb, int $usageMb): ContainerLimits
         cpuThrottledCount: null,
         oomKillCount: 0,
     );
+}
+
+/**
+ * @return list<SettlingWorker>
+ */
+function settlingWorkers(int $count): array
+{
+    return array_fill(0, $count, new SettlingWorker);
 }
 
 function memoryCapacity(int $currentWorkers = 0, ?CapacityCalculator $calculator = null): CapacityCalculationResult
@@ -146,7 +155,7 @@ test('workers still settling are charged their full estimate', function (): void
     $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
 
     $calculator = new CapacityCalculator;
-    $calculator->countSettlingWorkersWith(fn (): int => 8);
+    $calculator->trackSettlingWorkersWith(fn (): array => settlingWorkers(8));
 
     $result = memoryCapacity(currentWorkers: 10, calculator: $calculator);
 
@@ -160,8 +169,8 @@ test('the settling count is re-read on every call within a cycle', function (): 
 
     $settling = 0;
     $calculator = new CapacityCalculator;
-    $calculator->countSettlingWorkersWith(function () use (&$settling): int {
-        return $settling;
+    $calculator->trackSettlingWorkersWith(function () use (&$settling): array {
+        return settlingWorkers($settling);
     });
 
     $before = memoryCapacity(currentWorkers: 0, calculator: $calculator);
@@ -188,7 +197,7 @@ test('the typed memory breakdown carries the scope, cap and settling charge', fu
     $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 1_000));
 
     $calculator = new CapacityCalculator;
-    $calculator->countSettlingWorkersWith(fn (): int => 2);
+    $calculator->trackSettlingWorkersWith(fn (): array => settlingWorkers(2));
 
     $memory = memoryCapacity(currentWorkers: 2, calculator: $calculator)->memoryBreakdown();
 
@@ -206,4 +215,37 @@ test('a cgroup reporting a zero memory limit is treated as having none', functio
     $this->fakes->container->set(cgroupMemory(limitMb: 0, usageMb: 700));
 
     expect(memoryCapacity()->details['memory_details']['memory_scope'])->toBe('host');
+});
+
+test('a settling worker is charged only the memory it does not hold yet', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+
+    $settling = [new SettlingWorker(pid: 101, residentMb: 40.0), new SettlingWorker(pid: 102, residentMb: 250.0)];
+    $calculator = new CapacityCalculator;
+    $calculator->trackSettlingWorkersWith(function () use (&$settling): array {
+        return $settling;
+    });
+
+    $before = memoryCapacity(currentWorkers: 2, calculator: $calculator);
+
+    // 3200 MB headroom less 60 MB still to come from the first worker; the
+    // second already holds more than the estimate and costs nothing further.
+    expect($before->details['memory_details']['headroom_mb'])->toBe(3_140.0)
+        ->and($before->details['memory_details']['settling_workers'])->toBe(2);
+
+    // Spawned after usage was read, so none of its memory is counted yet,
+    // whatever it holds by now.
+    $settling[] = new SettlingWorker(pid: 103, residentMb: 90.0);
+    $after = memoryCapacity(currentWorkers: 3, calculator: $calculator);
+
+    expect($after->details['memory_details']['headroom_mb'])->toBe(3_040.0);
+});
+
+test('a settling worker whose resident memory cannot be read is charged in full', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+
+    $calculator = new CapacityCalculator;
+    $calculator->trackSettlingWorkersWith(fn (): array => [new SettlingWorker(pid: 101)]);
+
+    expect(memoryCapacity(currentWorkers: 1, calculator: $calculator)->details['memory_details']['headroom_mb'])->toBe(3_100.0);
 });

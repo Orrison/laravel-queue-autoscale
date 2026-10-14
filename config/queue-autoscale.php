@@ -299,8 +299,9 @@ return [
         'memory_limit_mb' => env('QUEUE_AUTOSCALE_MEMORY_LIMIT_MB'),
 
         /*
-         * How long a newly spawned worker is charged its full memory estimate
-         * instead of what it uses so far. A worker grows to its footprint while
+         * How long a newly spawned worker is charged the rest of its memory
+         * estimate (the estimate minus what it already holds) on top of
+         * measured usage. A worker grows to its footprint while
          * it boots, so without this a batch spawned in one cycle reads as free
          * memory in the next and the following batch overshoots.
          */

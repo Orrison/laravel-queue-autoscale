@@ -106,7 +106,7 @@ A process cannot see a memory limit set only on a parent cgroup, such as a Kuber
 
 ### Workers that are still booting
 
-A worker grows to its footprint while it boots (loading the framework, filling OPcache), so its memory does not show as used straight away. Workers spawned within `limits.worker_settle_seconds` (default 30) are charged their full `memoryMbPerWorker` on top of current usage. Without this, a batch spawned in one cycle reads as free memory in the next, and the next batch overshoots.
+A worker grows to its footprint while it boots (loading the framework, filling OPcache), so its memory does not show as used straight away. Workers spawned within `limits.worker_settle_seconds` (default 30) are charged the part of `memoryMbPerWorker` they do not hold yet: the estimate minus their resident memory (`VmRSS`) when usage was read, since that much is already in the measured usage. A worker spawned after usage was read, or whose resident memory cannot be read (no `/proc`), is charged the full estimate. Without this, a batch spawned in one cycle reads as free memory in the next, and the next batch overshoots.
 
 ### System metrics and caching
 
@@ -134,7 +134,7 @@ Degradation is layered:
     'worker_cpu_core_estimate' => 0.2,  // default cores per worker
     'reserve_cpu_cores' => 0.2,         // cores held back for the OS and the manager
     'memory_limit_mb' => null,          // explicit memory limit, for one this process cannot see
-    'worker_settle_seconds' => 30,      // how long a new worker is charged its full memory estimate
+    'worker_settle_seconds' => 30,      // how long a new worker is charged its memory estimate
 ],
 ```
 

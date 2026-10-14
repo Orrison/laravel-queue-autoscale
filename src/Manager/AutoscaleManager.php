@@ -36,6 +36,7 @@ use Cbox\LaravelQueueAutoscale\Policies\PolicyExecutor;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MeasuredResourceSample;
+use Cbox\LaravelQueueAutoscale\Scaling\DTOs\SettlingWorker;
 use Cbox\LaravelQueueAutoscale\Scaling\FairShareAllocator;
 use Cbox\LaravelQueueAutoscale\Scaling\MeasuredResourceCollector;
 use Cbox\LaravelQueueAutoscale\Scaling\QueueMetricsAdapter;
@@ -183,9 +184,13 @@ class AutoscaleManager
             $this->outputBuffer,
         );
 
-        $this->capacity->countSettlingWorkersWith(
-            fn (): int => $this->pool->settlingCount(AutoscaleConfiguration::workerSettleSeconds()),
-        );
+        $this->capacity->trackSettlingWorkersWith(fn (): array => array_map(
+            fn (WorkerProcess $worker): SettlingWorker => new SettlingWorker(
+                pid: $worker->pid(),
+                residentMb: $worker->pid() !== null ? $this->peakReader->residentMb($worker->pid()) : null,
+            ),
+            $this->pool->settling(AutoscaleConfiguration::workerSettleSeconds()),
+        ));
         $this->capacity->countHostWorkersWith(fn (): int => $this->pool->totalCount());
     }
 

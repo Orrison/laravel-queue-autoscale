@@ -229,5 +229,7 @@ test('settlingCount counts running workers spawned within the window', function 
     $this->pool->add($terminating);
 
     expect($this->pool->settlingCount(30))->toBe(1)
-        ->and($this->pool->settlingCount(0))->toBe(0);
+        ->and($this->pool->settlingCount(0))->toBe(0)
+        ->and(array_map(fn (WorkerProcess $worker): ?int => $worker->pid(), $this->pool->settling(30)))->toBe([1])
+        ->and($this->pool->settling(0))->toBe([]);
 });

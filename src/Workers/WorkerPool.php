@@ -165,15 +165,25 @@ class WorkerPool
      */
     public function settlingCount(int $seconds): int
     {
+        return count($this->settling($seconds));
+    }
+
+    /**
+     * The running workers settlingCount() counts.
+     *
+     * @return list<WorkerProcess>
+     */
+    public function settling(int $seconds): array
+    {
         if ($seconds <= 0) {
-            return 0;
+            return [];
         }
 
         $since = now()->subSeconds($seconds);
 
-        return $this->workers->filter(
+        return array_values($this->workers->filter(
             fn (WorkerProcess $w) => $w->spawnedAt->greaterThan($since) && $w->isRunning() && ! $w->isTerminating()
-        )->count();
+        )->all());
     }
 
     /**

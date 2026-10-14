@@ -30,3 +30,10 @@ test('returns null when the status file has no VmHWM line', function (): void {
 
     expect((new WorkerMemoryPeakReader($this->procRoot))->peakMb(4242))->toBeNull();
 });
+
+test('reads a process\'s current resident memory from VmRSS', function (): void {
+    file_put_contents("{$this->procRoot}/4242/status", "Name:\tphp\nVmHWM:\t  262144 kB\nVmRSS:\t  131072 kB\n");
+
+    expect((new WorkerMemoryPeakReader($this->procRoot))->residentMb(4242))->toBe(128.0)
+        ->and((new WorkerMemoryPeakReader($this->procRoot))->residentMb(9999))->toBeNull();
+});
