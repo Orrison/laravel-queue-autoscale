@@ -32,3 +32,7 @@ test('only the suffix of the job\'s own connection is removed', function (): voi
     expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com/123456789012/emails-production'))
         ->toBe('emails-production');
 });
+
+test('a URL with no queue in its path is unchanged', function (): void {
+    expect(QueueName::normalize('sqs', 'https://sqs.us-east-1.amazonaws.com/'))->toBe('https://sqs.us-east-1.amazonaws.com/');
+});
