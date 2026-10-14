@@ -9,6 +9,8 @@ use Cbox\LaravelQueueAutoscale\Workers\WorkerProcess;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerScaler;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Process\Process;
 
 /**
@@ -145,3 +147,25 @@ it('forwards worker output and reports exits while the manager shuts down', func
         ->and($removed[0]['context']['termination_requested'])->toBeTrue()
         ->and($removed[0]['context']['exit_code'])->toBe(0);
 })->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'requires pcntl and posix');
+
+it('styles the console line for a removed worker by how it exited', function (string $code, string $label): void {
+    $logged = [];
+    captureManagerLogs($logged);
+
+    $output = new BufferedOutput(OutputInterface::VERBOSITY_VERBOSE);
+    $manager = app(AutoscaleManager::class);
+    $manager->setOutput($output);
+
+    $process = startedWorkerProcess($code);
+    $process->wait();
+    exitReportingPool($manager)->add(new WorkerProcess($process, 'redis', 'emails', now()));
+
+    exitReportingScaler($manager)->cleanupDeadWorkers();
+
+    $line = collect(explode("\n", $output->fetch()))->first(fn (string $line): bool => str_contains($line, 'Removed dead worker'));
+
+    expect($line)->toContain($label);
+})->with([
+    'stopped itself cleanly' => ['exit(0);', '[INFO]'],
+    'crashed' => ['exit(3);', '[WARN]'],
+]);

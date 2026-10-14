@@ -408,9 +408,7 @@ class WorkerScaler
                 $this->outputBuffer->clearBuffer($pid);
             }
 
-            $this->reporter->verbose("   💀 Removed dead worker: PID {$worker->pid()}", 'warn');
-
-            $this->reportExit($worker);
+            $this->reportExit($worker, WorkerExitStatus::of($worker));
         }
     }
 
@@ -418,9 +416,12 @@ class WorkerScaler
      * Log and announce how a worker ended, so a crashed or killed worker can
      * be told apart from one that stopped itself.
      */
-    private function reportExit(WorkerProcess $worker): void
+    private function reportExit(WorkerProcess $worker, WorkerExitStatus $exit): void
     {
-        $exit = WorkerExitStatus::of($worker);
+        $this->reporter->verbose(
+            "   💀 Removed dead worker: PID {$worker->pid()}",
+            $exit->isGraceful() ? 'info' : 'warn',
+        );
 
         $context = [
             'pid' => $worker->pid(),
