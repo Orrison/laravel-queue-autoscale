@@ -169,3 +169,67 @@ it('styles the console line for a removed worker by how it exited', function (st
     'stopped itself cleanly' => ['exit(0);', '[INFO]'],
     'crashed' => ['exit(3);', '[WARN]'],
 ]);
+
+it('announces every field of a group worker the kernel killed', function (): void {
+    $logged = [];
+    captureManagerLogs($logged);
+
+    $manager = app(AutoscaleManager::class);
+    $process = startedWorkerProcess('fwrite(STDOUT, "ready\n"); sleep(30);');
+
+    $deadline = microtime(true) + 5.0;
+    while ($process->getOutput() === '' && microtime(true) < $deadline) {
+        usleep(20_000);
+    }
+
+    $pid = (int) $process->getPid();
+    exitReportingPool($manager)->add(new WorkerProcess($process, 'redis', 'notifications', now()->subSeconds(90), group: 'notifications'));
+
+    posix_kill($pid, SIGKILL);
+    while ($process->isRunning()) {
+        usleep(10_000);
+    }
+
+    exitReportingScaler($manager)->cleanupDeadWorkers();
+
+    $removed = loggedMessage($logged, 'Removed dead worker');
+
+    expect($removed)->toHaveCount(1)
+        ->and($removed[0]['level'])->toBe('warning')
+        ->and($removed[0]['context'])->toMatchArray([
+            'pid' => $pid,
+            'group' => 'notifications',
+            'exit_code' => 128 + SIGKILL,
+            'term_signal' => SIGKILL,
+            'termination_requested' => false,
+        ]);
+
+    Event::assertDispatched(WorkerExited::class, fn (WorkerExited $event): bool => $event->connection === 'redis'
+        && $event->queue === 'notifications'
+        && $event->group === 'notifications'
+        && $event->pid === $pid
+        && $event->exitCode === 128 + SIGKILL
+        && $event->termSignal === SIGKILL
+        && $event->terminationRequested === false
+        && $event->uptimeSeconds >= 90
+        && $event->graceful === false);
+})->skip(! extension_loaded('posix'), 'requires posix');
+
+it('treats the queue:work memory-limit exit as a planned stop', function (): void {
+    $logged = [];
+    captureManagerLogs($logged);
+
+    $manager = app(AutoscaleManager::class);
+    $process = startedWorkerProcess('exit(12);');
+    $process->wait();
+    exitReportingPool($manager)->add(new WorkerProcess($process, 'redis', 'emails', now()));
+
+    exitReportingScaler($manager)->cleanupDeadWorkers();
+
+    expect(loggedMessage($logged, 'Removed dead worker')[0]['level'])->toBe('info');
+
+    Event::assertDispatched(WorkerExited::class, fn (WorkerExited $event): bool => $event->exitCode === 12
+        && $event->termSignal === null
+        && $event->group === null
+        && $event->graceful);
+});

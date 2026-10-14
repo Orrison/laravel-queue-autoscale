@@ -65,3 +65,58 @@ test('reports no signal when the platform cannot say which one', function (): vo
     expect($exit->termSignal)->toBeNull()
         ->and($exit->isGraceful())->toBeFalse();
 });
+
+test('a queue:work error exit is not graceful', function (): void {
+    // Worker::EXIT_ERROR: the worker stopped itself, but because something broke.
+    expect(WorkerExitStatus::of(exitedWorker('exit(1);'))->isGraceful())->toBeFalse();
+});
+
+test('a worker the manager asked to stop that died of SIGTERM is requested but not graceful', function (): void {
+    $process = new Process([PHP_BINARY, '-r', 'fwrite(STDOUT, "ready\n"); sleep(10);']);
+    $process->start();
+
+    $deadline = microtime(true) + 5.0;
+    while ($process->getOutput() === '' && microtime(true) < $deadline) {
+        usleep(10_000);
+    }
+
+    $worker = new WorkerProcess($process, 'redis', 'default', now());
+    $worker->markTerminationRequested(now(), 30);
+    posix_kill((int) $process->getPid(), SIGTERM);
+
+    while ($process->isRunning()) {
+        usleep(10_000);
+    }
+
+    $exit = WorkerExitStatus::of($worker);
+
+    // Symfony reports a signalled exit as 128 + the signal.
+    expect($exit->termSignal)->toBe(SIGTERM)
+        ->and($exit->exitCode)->toBe(128 + SIGTERM)
+        ->and($exit->terminationRequested)->toBeTrue()
+        ->and($exit->isGraceful())->toBeFalse();
+})->skip(! extension_loaded('posix'), 'requires posix');
+
+test('a signal makes an exit ungraceful even alongside a clean exit code', function (): void {
+    $process = Mockery::mock(Process::class);
+    $process->shouldReceive('getPid')->andReturn(4242);
+    $process->shouldReceive('hasBeenSignaled')->andReturn(true);
+    $process->shouldReceive('getTermSignal')->andReturn(SIGKILL);
+    $process->shouldReceive('getExitCode')->andReturn(0);
+
+    $exit = WorkerExitStatus::of(new WorkerProcess($process, 'redis', 'default', now()));
+
+    expect($exit->termSignal)->toBe(SIGKILL)
+        ->and($exit->isGraceful())->toBeFalse();
+});
+
+test('serialises to the log context keys', function (): void {
+    $exit = new WorkerExitStatus(exitCode: 137, termSignal: 9, terminationRequested: false, uptimeSeconds: 42);
+
+    expect($exit->toArray())->toBe([
+        'exit_code' => 137,
+        'term_signal' => 9,
+        'termination_requested' => false,
+        'uptime_seconds' => 42,
+    ]);
+});

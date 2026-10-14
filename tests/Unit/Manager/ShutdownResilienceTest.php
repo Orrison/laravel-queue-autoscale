@@ -8,6 +8,7 @@ use Cbox\LaravelQueueAutoscale\Manager\AutoscaleManager;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerPool;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerProcess;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 /**
@@ -67,3 +68,34 @@ it('still force-kills workers and completes shutdown when a WorkerExited listene
         $stubborn->stop(0);
     }
 })->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'requires pcntl and posix');
+
+it('falls back to error_log and still completes shutdown when the log handler itself throws', function (): void {
+    Event::fake([AutoscaleManagerStopped::class]);
+
+    // The exit report goes through Log::log(), and the failure report through
+    // Log::error(); both throw, as a broken log channel would.
+    Log::shouldReceive('channel')->andReturnSelf();
+    Log::shouldReceive('info', 'debug', 'notice', 'warning')->andReturnNull();
+    Log::shouldReceive('log')->andThrow(new RuntimeException('log handler failed'));
+    Log::shouldReceive('error')->andThrow(new RuntimeException('log handler failed'));
+
+    $errorLog = tempnam(sys_get_temp_dir(), 'autoscale-shutdown');
+    $previousErrorLog = ini_set('error_log', (string) $errorLog);
+
+    $manager = app(AutoscaleManager::class);
+    $exited = new Process([PHP_BINARY, '-r', 'exit(3);']);
+    $exited->run();
+    shutdownWorkerPool($manager)->add(new WorkerProcess($exited, 'redis', 'emails', now()));
+
+    try {
+        (new ReflectionMethod($manager, 'shutdown'))->invoke($manager);
+
+        Event::assertDispatched(AutoscaleManagerStopped::class);
+
+        expect((string) file_get_contents((string) $errorLog))
+            ->toContain('queue-autoscale: could not collect exited workers during shutdown: log handler failed');
+    } finally {
+        ini_set('error_log', $previousErrorLog === false ? '' : $previousErrorLog);
+        @unlink((string) $errorLog);
+    }
+});
