@@ -229,3 +229,14 @@ it('floors the host estimate at the p90 peak across every live worker', function
     expect($resolver->hostEstimate()->memoryMbPerWorker)->toBe(150.0)
         ->and($resolver->hostEstimate()->memorySource)->toBe(EstimateSource::Measured);
 });
+
+it('ignores a workload reported with no worker peaks', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:default' => [], 'redis:other' => [200.0]]);
+
+    expect($resolver->resolve('redis', 'default')->memoryMbPerWorker)->toBe(128.0)
+        ->and($resolver->hostEstimate()->memoryMbPerWorker)->toBe(200.0);
+});
