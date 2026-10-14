@@ -24,9 +24,9 @@ class CapacityCalculator
     /**
      * Memory limit and usage per scope that applies to this host, in MB.
      *
-     * @var array<string, array{limit_mb: float, used_mb: float}>
+     * @var non-empty-array<string, array{limit_mb: float, used_mb: float}>
      */
-    private array $cachedMemoryScopes = [];
+    private array $cachedMemoryScopes = ['fallback' => ['limit_mb' => 4096.0, 'used_mb' => 2048.0]];
 
     private ?float $cachedAvailableCores = null;
 
@@ -262,7 +262,6 @@ class CapacityCalculator
         $limitsResult = SystemMetrics::limits();
         if ($limitsResult->isFailure()) {
             $this->cachedAvailableCores = null;
-            $this->cachedMemoryScopes = [];
             $this->cachedCpuPercent = null;
             $this->cacheTimestamp = null;
 
@@ -291,7 +290,7 @@ class CapacityCalculator
      *
      * Each scope pairs a limit with usage measured against that same limit.
      *
-     * @return array<string, array{limit_mb: float, used_mb: float}>
+     * @return non-empty-array<string, array{limit_mb: float, used_mb: float}>
      */
     private function measureMemoryScopes(SystemLimits $limits): array
     {
@@ -358,9 +357,7 @@ class CapacityCalculator
      */
     private function memoryHeadroom(int $maxMemoryPercent): array
     {
-        $scopes = $this->cachedMemoryScopes !== []
-            ? $this->cachedMemoryScopes
-            : ['fallback' => ['limit_mb' => 4096.0, 'used_mb' => 2048.0]];
+        $scopes = $this->cachedMemoryScopes;
 
         $primary = 'fallback';
 
