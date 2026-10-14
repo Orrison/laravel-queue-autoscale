@@ -36,7 +36,6 @@ use Cbox\LaravelQueueAutoscale\Policies\PolicyExecutor;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MeasuredResourceSample;
-use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
 use Cbox\LaravelQueueAutoscale\Scaling\FairShareAllocator;
 use Cbox\LaravelQueueAutoscale\Scaling\MeasuredResourceCollector;
 use Cbox\LaravelQueueAutoscale\Scaling\QueueMetricsAdapter;
@@ -50,6 +49,7 @@ use Cbox\LaravelQueueAutoscale\Support\Coerce;
 use Cbox\LaravelQueueAutoscale\Support\RestartSignal;
 use Cbox\LaravelQueueAutoscale\Support\WorkloadName;
 use Cbox\LaravelQueueAutoscale\Workers\OrphanedWorkerReaper;
+use Cbox\LaravelQueueAutoscale\Workers\WorkerMemoryPeakReader;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerOutputBuffer;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerPool;
 use Cbox\LaravelQueueAutoscale\Workers\WorkerProcess;
@@ -162,6 +162,7 @@ class AutoscaleManager
         // building one inside the evaluation, as this did, reset every balance
         // each time and made the whole guarantee a no-op.
         private readonly FairShareAllocator $allocator = new FairShareAllocator,
+        private readonly WorkerMemoryPeakReader $peakReader = new WorkerMemoryPeakReader,
     ) {
         $this->pool = new WorkerPool;
         $this->outputBuffer = new WorkerOutputBuffer;
@@ -397,7 +398,7 @@ class AutoscaleManager
 
         $capacity = $this->capacity->calculateMaxWorkers(
             $this->pool->totalCount(),
-            ResourceEstimate::globalDefault(),
+            $this->resolver->hostEstimate(),
         );
         $cpu = $capacity->cpuBreakdown();
         $memory = $capacity->memoryBreakdown();
@@ -1410,6 +1411,33 @@ class AutoscaleManager
         $this->currentQueueStats = [];
 
         $this->forgetQueuesNotSeenRecently();
+
+        $this->observeWorkerPeakMemory();
+    }
+
+    /**
+     * Feed live workers' peak memory to the resolver, so a worker's boot peak
+     * counts towards its cost even though no job was running at the time.
+     */
+    private function observeWorkerPeakMemory(): void
+    {
+        $peaks = [];
+
+        foreach ($this->pool->all() as $worker) {
+            $pid = $worker->pid();
+
+            if ($pid === null || ! $worker->isRunning()) {
+                continue;
+            }
+
+            $peakMb = $this->peakReader->peakMb($pid);
+
+            if ($peakMb !== null) {
+                $peaks["{$worker->connection}:".($worker->group ?? $worker->queue)][] = $peakMb;
+            }
+        }
+
+        $this->resolver->observeWorkerPeakMemory($peaks);
     }
 
     /**
