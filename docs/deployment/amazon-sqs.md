@@ -72,7 +72,8 @@ SQS has no API for the second — Laravel's `SqsQueue::creationTimeOfOldestPendi
   SLA window. Nothing measures how long jobs are actually waiting, so there is no urgency as they
   approach the target.
 - `SlaBreached` and `SlaRecovered` never fire, because both are decided from the oldest job's age.
-  `SlaBreachPredicted` still fires from the pickup-time prediction when samples exist.
+  `SlaBreachPredicted` still fires: its prediction is the time to work through the backlog at the
+  target worker count, which needs no job age.
 
 A sample needs two things:
 

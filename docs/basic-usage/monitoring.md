@@ -138,8 +138,9 @@ Event::listen(function (SlaBreached $event) {
 `SlaRecovered` has the same shape but with `currentJobAge` instead of `oldestJobAge`, and offers `marginSeconds()` / `marginPercentage()`.
 
 Both are decided from the oldest pending job's age, which some drivers cannot report — Amazon SQS
-among them. On those drivers neither event fires; watch `SlaBreachPredicted` instead, which needs
-pickup samples. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
+among them. On those drivers neither event fires. `SlaBreachPredicted` still does: its prediction is the time
+to work through the backlog at the target worker count, which needs no job age. See
+[Running on Amazon SQS](../deployment/amazon-sqs.md).
 
 ### Failure fuse state
 
