@@ -44,6 +44,27 @@ another.
 than listed, so nothing in config bounds how many there will be. `limits.max_total_workers` is what
 stops a tenant-per-queue application raising thousands of queues to their minimums.
 
+**A pickup sample cap that hides SLA breaches.** `pickup_time.max_sample_seconds` (default 3600)
+drops pickup samples above it, so a job re-pushed with `queue:retry` does not count days of waiting
+that never happened. But a breach *is* a sample above the SLA target: with the cap at or below a
+queue's `sla.target_seconds`, every breaching sample is dropped and the queue reads as healthy
+however long its jobs wait. The warning names each affected queue and its target:
+
+```text
+WARN   The pickup sample cap hides SLA breaches
+       pickup_time.max_sample_seconds is 600s, at or below the SLA target of 'reports' (900s).
+       Samples above the cap are dropped, so a breach is never measured.
+       → Raise pickup_time.max_sample_seconds well above the largest SLA target (several times it),
+         or set it to null to keep every sample.
+```
+
+A cap of `null` or `0` keeps every sample and is never reported.
+
+**A leader lease too short to survive a slow cycle.** In cluster mode the leader renews its lease
+as part of each evaluation cycle. Below three evaluation intervals, one slow metrics read or Redis
+latency spike hands leadership to another host, and every handover restarts worker placement,
+anti-flapping and fair-share rotation.
+
 **Configuration left over from v3.** A top-level `queue-autoscale.workers` block, or a
 `workers.timeout_seconds` set without `max_time_seconds`. Both parse fine and both silently mean
 something other than they used to — see [Upgrading to v4](../advanced-usage/upgrade-guide-v4.md).
@@ -86,6 +107,13 @@ php artisan queue:autoscale:doctor --strict
 ```
 
 Notices never fail the command, at either setting.
+
+## Queues that are never checked
+
+Queues on connections no `queue:work` process can pop from are left out of the doctor's queue list,
+as they are left out of the manager's: the `sync`, `null`, `deferred` and `background` drivers run
+jobs in-process or discard them, yet still fire the queue events the metrics package records. A
+configuration rule that only ever matched such a queue therefore shows up as matching nothing.
 
 ## Before any queue exists
 

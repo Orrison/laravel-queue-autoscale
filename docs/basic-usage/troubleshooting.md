@@ -21,6 +21,11 @@ Find your symptom in the list below, then follow the diagnosis steps in order. E
 - [A group never scales up even though its members have jobs](#a-group-never-scales-up-even-though-its-members-have-jobs)
 - [Deploy finishes but new config is not applied](#deploy-finishes-but-new-config-is-not-applied)
 - [Two autoscalers are fighting each other](#two-autoscalers-are-fighting-each-other)
+- [Scale-up stopped in a container while memory looks free](#scale-up-stopped-in-a-container-while-memory-looks-free)
+- [The container is OOM-killed, or capacity is held after an OOM kill](#the-container-is-oom-killed-or-capacity-is-held-after-an-oom-kill)
+- [On SQS, pickup time is never measured and `SlaBreached` never fires](#on-sqs-pickup-time-is-never-measured-and-slabreached-never-fires)
+- [`queue:autoscale:doctor` warns about the pickup sample cap](#queueautoscaledoctor-warns-about-the-pickup-sample-cap)
+- [A queue on a `sync` connection is not supervised](#a-queue-on-a-sync-connection-is-not-supervised)
 
 ## First diagnostic command
 
@@ -56,7 +61,26 @@ The output names the limiting factor for every queue.
 
 **Symptoms:** Log shows `Worker spawned PID=X`, then `Worker did not stop gracefully` or `Removed dead worker` a moment later.
 
-`Removed dead worker` carries how the worker ended: `exit_code`, `term_signal`, `termination_requested` and `uptime_seconds`. It is logged at `info` when `queue:work` stopped itself cleanly (exit `0`, or `12` at its `--memory` limit) and at `warning` otherwise. A `term_signal` of `9` with `termination_requested` false means the worker was killed without the manager asking: either a job ran past `--timeout` (`queue:work` SIGKILLs itself, after logging the timeout) or something outside the manager killed it, most often the kernel's OOM killer. The same details are dispatched as the `WorkerExited` event.
+`Removed dead worker` carries how the worker ended: `exit_code`, `term_signal`, `termination_requested` and `uptime_seconds`, plus `pid`, `connection`, `queue` and `group`. It is logged at `info` when `queue:work` stopped itself cleanly (exit `0`, or `12` at its `--memory` limit, with no signal) and at `warning` otherwise. The same details are dispatched as the [`WorkerExited` event](event-handling.md#workerexited).
+
+**Reading the exit:**
+
+| `exit_code` | `term_signal` | `termination_requested` | Meaning |
+|---|---|---|---|
+| `0` | `null` | `true` | Scale-down or shutdown: the manager sent SIGTERM and the worker finished its job. Normal |
+| `0` | `null` | `false` | The worker stopped itself: `--max-time` reached, `queue:restart`, or a lost connection. Normal unless `uptime_seconds` is tiny every time |
+| `12` | `null` | any | `queue:work` hit its `--memory` limit. The autoscaler never passes `--memory`, so something in your app sets it |
+| `137` | `9` | `false` | SIGKILL the manager did not send: a job ran past `workers.timeout_seconds`, or the kernel's OOM killer |
+| `137` | `9` | `true` | The worker ignored SIGTERM past its `workers.shutdown_timeout_seconds` and the manager force-killed it |
+| `143` | `15` | any | The process died on SIGTERM instead of handling it, or something else sent SIGTERM |
+| `1` or `255` | `null` | `false` | The process crashed: a fatal error, an uncaught exception outside a job, or a failed boot |
+
+A signal-killed process has no exit code of its own; Symfony Process reports `128 + signal`, which is why SIGKILL reads `137`.
+
+**Telling a timeout from an OOM kill** (both are `137` / `9` / not requested):
+
+- A timeout leaves a trace in Laravel before `queue:work` kills itself: the job is marked failed with a `TimeoutExceededException` (`… has timed out.`) once its attempts run out, so it shows in `failed_jobs`, and recent Laravel releases dispatch a `JobTimedOut` event you can log. The worker's `uptime_seconds` is also at least `workers.timeout_seconds`.
+- An OOM kill is logged by the kernel: `dmesg | grep -i 'killed process'` on the host, `OOMKilled` in `kubectl describe pod`, or the container's OOM kill counter. In a container the manager also logs `Kernel OOM-killed processes on this host; holding worker capacity at its current count` — see [below](#the-container-is-oom-killed-or-capacity-is-held-after-an-oom-kill).
 
 **Most common causes:**
 
@@ -67,7 +91,7 @@ The output names the limiting factor for every queue.
    ```
 
    The error will be immediate — almost always `.env` permissions, missing Redis connection, or a wrong PHP path.
-2. **PHP is running out of memory on each job.** Check `storage/logs/laravel.log` for `Allowed memory size` errors in the spawned workers. The autoscaler never passes `--memory` to `queue:work`, so raise `memory_limit` in the php.ini the manager's PHP binary uses.
+2. **PHP is running out of memory on each job.** Check `storage/logs/laravel.log` for `Allowed memory size` errors in the spawned workers (exit code `255`). The autoscaler never passes `--memory` to `queue:work`, so raise `memory_limit` in the php.ini the manager's PHP binary uses.
 3. **A worker is hitting `workers.max_time_seconds`.** That value is passed as `--max-time`, so the worker process exits after that many seconds of life and is respawned. Default is 3600s. Expected behaviour unless you see it every few seconds. (A job exceeding `workers.timeout_seconds` is a different event — that kills the job, not the worker.)
 
 ## Workers keep spawning and terminating (flapping)
@@ -209,6 +233,48 @@ The manager honors the same signal on its next evaluation tick, gracefully termi
 - Docker Swarm/Kubernetes with `replicas: 2` while cluster mode is still disabled.
 
 **Fix:** In single-host mode, run exactly one manager per app. In cluster mode, run exactly one manager per host and let Redis-backed coordination handle the rest. Only set `QUEUE_AUTOSCALE_MANAGER_ID` manually if you need to override the auto-generated node identity.
+
+## Scale-up stopped in a container while memory looks free
+
+**Symptoms:** `-vvv` shows `limitingFactor: memory` and a memory line near zero available, while `kubectl top` or `docker stats` shows the container well under its limit.
+
+1. **Check the scope.** The `-vvv` capacity breakdown prints `Memory Limit: N workers (X.XGB available of Y.YGB (scope), NMB/worker)`. If the scope is `host` inside a container, the manager cannot see your limit and is sizing against the node; set `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`. See [Kubernetes and Amazon ECS](../deployment/kubernetes-ecs.md).
+2. **Check `capped by … free memory`.** The node itself (or another scope) has less free memory than your container's headroom. That is the node being crowded, not your container.
+3. **Upgrade to 4.4.1 or later.** Earlier releases measured the container by raw cgroup usage, which counts reclaimable page cache. A container writing log files drifted toward its limit and stopped scaling up. 4.4.1 uses the working set, as `kubectl top` does.
+4. **Workers are still booting.** For `limits.worker_settle_seconds` (default 30) after a spawn, new workers are charged the memory they have not grown into yet, so headroom right after a scale-up is lower than usage suggests. `memory_details.settling_workers` shows how many.
+5. **The per-worker estimate is higher than you think.** On Linux it is floored at what the queue's live workers actually peak at (`VmHWM`, boot included). `memory_details.worker_memory_mb` and `memory_estimate_source` show the value used.
+
+## The container is OOM-killed, or capacity is held after an OOM kill
+
+**Symptoms:** `Kernel OOM-killed processes on this host; holding worker capacity at its current count` in the log, decisions limited by `memory` with `oom_backoff_ceiling` set, or workers exiting with `137` / signal `9`.
+
+The kernel's OOM kill counter for the manager's cgroup rose, so worker capacity is held at the count at that moment for `limits.oom_backoff_seconds` (default 300) instead of refilling the memory the kill freed. That is deliberate. It ends on its own; a further kill restarts it.
+
+To stop the kills rather than the hold:
+
+1. **Make the limit visible.** A pod- or task-level limit the manager cannot see is the most common cause: it sizes against the node. Set `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`.
+2. **Raise `worker_memory_mb_estimate`** towards your workers' real peak, or lower `limits.max_memory_percent` to leave more slack.
+3. **Raise `worker_settle_seconds`** if workers take longer than 30 seconds to reach their footprint.
+4. **Set PHP's `memory_limit`** so a runaway job dies as a PHP fatal error in one worker rather than an OOM kill.
+
+`QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS=0` disables the hold. On cgroup v1 the hold needs Linux 4.13 or later and `cboxdk/system-metrics` 3.1 or later; outside Linux cgroups it never triggers.
+
+## On SQS, pickup time is never measured and `SlaBreached` never fires
+
+SQS cannot report the age of its oldest message, and `SlaBreached` / `SlaRecovered` are decided from that age, so on SQS they never fire. The pickup-time SLA has to come from pickup samples, which need both:
+
+- `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` — only Horizon writes `pushedAt`, and Horizon does not run on SQS.
+- A shared store: `QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis` on a single host (cluster mode already uses Redis).
+
+On 4.3 and earlier, samples on SQS were also recorded under the queue URL, where the manager never looked; upgrade to 4.4. Do not include the connection's `suffix` in a queue's name. See [Running on Amazon SQS](../deployment/amazon-sqs.md).
+
+## `queue:autoscale:doctor` warns about the pickup sample cap
+
+`The pickup sample cap hides SLA breaches` means `pickup_time.max_sample_seconds` is at or below some queue's `sla.target_seconds`. Samples above the cap are dropped, so a breach is never measured and the queue always reads as healthy. Raise `QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS` to several times your largest SLA target, or set it to empty to keep every sample. See [Check Your Configuration](configuration-check.md) for every warning the doctor reports.
+
+## A queue on a `sync` connection is not supervised
+
+Queues on `sync`, `null`, `deferred` and `background` connections are skipped by discovery, in the manager and in `queue:autoscale:doctor`. Those drivers run jobs in the dispatching process or discard them, so no `queue:work` process could ever pop from them, but they still fire queue events and so appear in the metrics package. If a queue you expect to see is missing, check that its connection uses a real queue driver.
 
 ---
 

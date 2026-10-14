@@ -222,7 +222,7 @@ How common exits read:
 | The worker process exited on the manager's SIGTERM instead of handling it | `143` | `15` | `true` | `false` |
 | A fatal error or uncaught exception outside a job | `255` (or `1`) | `null` | `false` | `false` |
 
-A SIGKILL with `$terminationRequested` false is either a job timeout or something outside the manager, most often the OOM killer. The two are told apart by the log: `queue:work` reports the timeout before it kills itself, and the kernel logs the OOM kill (`dmesg`, or the container's OOM kill counter). See [Troubleshooting](troubleshooting.md#workers-spawn-but-die-within-seconds).
+A SIGKILL with `$terminationRequested` false is either a job timeout or something outside the manager, most often the OOM killer. The two are told apart elsewhere: a timed-out job is marked failed with a `TimeoutExceededException` once its attempts run out, while the kernel logs an OOM kill (`dmesg`, `OOMKilled` in Kubernetes) and, in a container, the manager logs its OOM backoff. See [Troubleshooting](troubleshooting.md#workers-spawn-but-die-within-seconds).
 
 The same details are logged as `Removed dead worker`, at `info` for a graceful exit and `warning` otherwise, with the context keys `pid`, `connection`, `queue`, `group`, `exit_code`, `term_signal`, `termination_requested` and `uptime_seconds`. With `-v`, the console line `Removed dead worker: PID …` is styled to match.
 
