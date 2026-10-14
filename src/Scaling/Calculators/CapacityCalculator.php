@@ -12,6 +12,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScope;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\SettlingWorker;
+use Cbox\SystemMetrics\DTO\Metrics\Container\ContainerLimits;
 use Cbox\SystemMetrics\DTO\Metrics\Cpu\CpuSnapshot;
 use Cbox\SystemMetrics\DTO\Metrics\SystemLimits;
 use Cbox\SystemMetrics\SystemMetrics;
@@ -383,11 +384,13 @@ class CapacityCalculator
 
         $this->cachedCpuPercent = $this->measureCpuPercent();
 
-        $this->cachedMemoryScopes = $this->measureMemoryScopes($limits);
+        $containerResult = SystemMetrics::container();
+        $container = $containerResult->isSuccess() ? $containerResult->getValue() : null;
+
+        $this->cachedMemoryScopes = $this->measureMemoryScopes($limits, $container);
         $this->cachedSettlingResidentMb = $this->measureSettlingResidentMb();
 
-        $containerResult = SystemMetrics::container();
-        $this->oomBackoff()->observe($containerResult->isSuccess() ? $containerResult->getValue()->oomKillCount : null);
+        $this->oomBackoff()->observe($container?->oomKillCount);
 
         $this->cacheTimestamp = microtime(true);
     }
@@ -399,6 +402,10 @@ class CapacityCalculator
      *   reclaimable page cache. Always applies.
      * - cgroup: the container's own limit and usage, only when a limit is set.
      *   A cgroup without one says nothing about how much memory there is.
+     *   Usage is the working set (usage minus inactive file cache) where the
+     *   kernel reports it: raw cgroup usage counts page cache the kernel would
+     *   reclaim, so a container writing log files would read as nearly full
+     *   and stop scaling up. The host scope already discounts it the same way.
      * - configured: `limits.memory_limit_mb`, for a limit the process cannot
      *   see, such as one set only on a parent cgroup (a pod or task limit).
      *
@@ -406,7 +413,7 @@ class CapacityCalculator
      *
      * @return non-empty-list<MemoryScope>
      */
-    private function measureMemoryScopes(SystemLimits $limits): array
+    private function measureMemoryScopes(SystemLimits $limits, ?ContainerLimits $container): array
     {
         $scopes = [];
         $hostUsedMb = null;
@@ -423,19 +430,15 @@ class CapacityCalculator
             }
         }
 
-        $containerResult = SystemMetrics::container();
+        $cgroupUsedBytes = $container->memoryWorkingSetBytes ?? $container?->memoryUsageBytes;
 
-        if ($containerResult->isSuccess()) {
-            $container = $containerResult->getValue();
+        if ($container !== null && $cgroupUsedBytes !== null) {
+            $cgroupUsedMb = self::toMb($cgroupUsedBytes);
+            $cgroupLimitBytes = $container->memoryLimitBytes;
 
-            if ($container->memoryUsageBytes !== null) {
-                $cgroupUsedMb = self::toMb($container->memoryUsageBytes);
-                $cgroupLimitBytes = $container->memoryLimitBytes;
-
-                // Zero means no limit was set, the same as hasMemoryLimit().
-                if ($cgroupLimitBytes !== null && $cgroupLimitBytes > 0) {
-                    $scopes[] = new MemoryScope(MemoryScopeKind::Cgroup, self::toMb($cgroupLimitBytes), $cgroupUsedMb);
-                }
+            // Zero means no limit was set, the same as hasMemoryLimit().
+            if ($cgroupLimitBytes !== null && $cgroupLimitBytes > 0) {
+                $scopes[] = new MemoryScope(MemoryScopeKind::Cgroup, self::toMb($cgroupLimitBytes), $cgroupUsedMb);
             }
         }
 

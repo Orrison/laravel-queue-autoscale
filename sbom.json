@@ -1,7 +1,7 @@
 {
     "bomFormat": "CycloneDX",
     "specVersion": "1.5",
-    "serialNumber": "urn:uuid:98754ecd-4324-5f40-a77f-f906a9664c8a",
+    "serialNumber": "urn:uuid:0655d862-244f-5fa0-8230-d28f5b84bf86",
     "version": 1,
     "metadata": {
         "tools": [
@@ -246,9 +246,9 @@
         },
         {
             "type": "library",
-            "bom-ref": "pkg:composer/cboxdk/system-metrics@v3.0.2",
+            "bom-ref": "pkg:composer/cboxdk/system-metrics@v3.1.0",
             "name": "cboxdk/system-metrics",
-            "version": "v3.0.2",
+            "version": "v3.1.0",
             "description": "Peek into your low level system metrics with PHP",
             "licenses": [
                 {
@@ -257,7 +257,7 @@
                     }
                 }
             ],
-            "purl": "pkg:composer/cboxdk/system-metrics@v3.0.2",
+            "purl": "pkg:composer/cboxdk/system-metrics@v3.1.0",
             "externalReferences": [
                 {
                     "type": "vcs",
@@ -265,7 +265,7 @@
                 },
                 {
                     "type": "distribution",
-                    "url": "https://api.github.com/repos/cboxdk/system-metrics/zipball/accc658970d7e1cdc4a4a322b6a0ca0555e797d9"
+                    "url": "https://api.github.com/repos/cboxdk/system-metrics/zipball/b43eb005f487519ecb391c1e54dc638607d31c83"
                 }
             ],
             "properties": [

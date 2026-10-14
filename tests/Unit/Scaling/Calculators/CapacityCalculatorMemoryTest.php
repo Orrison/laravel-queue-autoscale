@@ -52,7 +52,7 @@ function hostMemory(int $totalMb, int $availableMb): MemorySnapshot
     );
 }
 
-function cgroupMemory(?int $limitMb, int $usageMb): ContainerLimits
+function cgroupMemory(?int $limitMb, int $usageMb, ?int $workingSetMb = null): ContainerLimits
 {
     return new ContainerLimits(
         cgroupVersion: CgroupVersion::V2,
@@ -62,6 +62,7 @@ function cgroupMemory(?int $limitMb, int $usageMb): ContainerLimits
         memoryUsageBytes: $usageMb * CAPACITY_TEST_MB,
         cpuThrottledCount: null,
         oomKillCount: 0,
+        memoryWorkingSetBytes: $workingSetMb === null ? null : $workingSetMb * CAPACITY_TEST_MB,
     );
 }
 
@@ -105,6 +106,27 @@ test('in a container with its own limit, headroom follows the cgroup', function 
     expect($result->maxWorkersByMemory)->toBe(14)
         ->and($result->details['memory_details']['memory_scope'])->toBe('cgroup')
         ->and($result->details['memory_details']['total_memory_mb'])->toBe(4_000.0);
+});
+
+test('reclaimable page cache in a cgroup does not count as used', function (): void {
+    // 3800 MB raw usage, of which 1800 MB is inactive file cache.
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 12_000));
+    $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 3_800, workingSetMb: 2_000));
+    config()->set('queue-autoscale.limits.max_memory_percent', 85);
+
+    $result = memoryCapacity();
+
+    // Same as 2000 MB used: 85% of 4000 MB minus the working set.
+    expect($result->maxWorkersByMemory)->toBe(14)
+        ->and($result->details['memory_details']['used_memory_mb'])->toBe(2_000.0);
+});
+
+test('without a working set, raw cgroup usage is used', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 12_000));
+    $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 3_000));
+    config()->set('queue-autoscale.limits.max_memory_percent', 85);
+
+    expect(memoryCapacity()->details['memory_details']['used_memory_mb'])->toBe(3_000.0);
 });
 
 test('a cgroup without a memory limit does not borrow the host total', function (): void {

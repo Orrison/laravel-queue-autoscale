@@ -97,10 +97,10 @@ Memory is read in up to three scopes, each pairing a limit with usage measured a
 | Scope | Limit | Used | Applies when |
 |---|---|---|---|
 | `host` | `MemTotal` | `MemTotal - MemAvailable` | always (Linux `/proc/meminfo`, or the platform equivalent) |
-| `cgroup` | the container's `memory.max` / `memory.limit_in_bytes` | the cgroup's usage | the container has its own memory limit |
-| `configured` | `limits.memory_limit_mb` | the cgroup's usage, else the host's | it is set |
+| `cgroup` | the container's `memory.max` / `memory.limit_in_bytes` | the cgroup's working set: usage minus `inactive_file` from `memory.stat` (raw usage when that is unreadable) | the container has its own memory limit |
+| `configured` | `limits.memory_limit_mb` | the cgroup's working set, else the host's usage | it is set |
 
-`max_memory_percent` applies to the most specific scope (`configured`, else `cgroup`, else `host`). Every other scope caps the headroom at what it has free, so a container on a crowded node cannot claim memory the node does not have. `MemAvailable` already excludes reclaimable page cache.
+`max_memory_percent` applies to the most specific scope (`configured`, else `cgroup`, else `host`). Every other scope caps the headroom at what it has free, so a container on a crowded node cannot claim memory the node does not have. `MemAvailable` already excludes reclaimable page cache, and the cgroup working set discounts it the same way, which is how Kubernetes measures a container's memory. Raw cgroup usage counts page cache, so a container writing log files would read as nearly full and stop scaling up.
 
 A process cannot see a memory limit set only on a parent cgroup, such as a Kubernetes pod-level limit or an Amazon ECS task-level limit with no container limit. There the host scope applies, and in a VM-backed container it can describe far more memory than the container may use. Give the container its own limit, or set `limits.memory_limit_mb` (`QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`).
 

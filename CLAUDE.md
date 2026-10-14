@@ -17,6 +17,7 @@ same commit.
 - ext-pcntl, ext-posix (the manager forks and signals worker processes)
 - ext-mbstring (character-boundary truncation of worker output)
 - cboxdk/laravel-queue-metrics — `^3.4.1`
+- cboxdk/system-metrics — `^3.1` (CPU, memory, cgroup and OOM readings for capacity; used directly, so declared directly)
 - illuminate/contracts — `^12.0||^13.0`
 - symfony/process — `^7.0||^8.0`
 
