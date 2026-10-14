@@ -175,9 +175,11 @@ class FuseTripped
 
 ### `WorkerExited`
 
-Fired once for every worker process the manager finds has exited, whether it crashed, was killed, or stopped itself — including while the manager is shutting down.
+Fired once for every worker process the manager finds has exited, whether it crashed, was killed, or stopped itself — including while the manager is shutting down. A worker that exits is removed from the pool and replaced on a later cycle if the queue still needs it.
 
 ```php
+namespace Cbox\LaravelQueueAutoscale\Events;
+
 class WorkerExited
 {
     public function __construct(
@@ -186,17 +188,64 @@ class WorkerExited
         public readonly ?string $group,
         public readonly ?int $pid,
         public readonly ?int $exitCode,
-        public readonly ?int $termSignal,          // signal that killed it, e.g. 9 for SIGKILL
-        public readonly bool $terminationRequested, // the manager asked it to stop
+        public readonly ?int $termSignal,
+        public readonly bool $terminationRequested,
         public readonly int $uptimeSeconds,
         public readonly bool $graceful,
     ) {}
 }
 ```
 
-`$graceful` is true when the worker stopped itself normally: exit code 0, or the code `queue:work` uses when it hits its memory limit, with no terminating signal. A worker that was SIGKILLed — by the kernel's OOM killer, by `queue:work` itself when a job exceeds `--timeout`, or by the manager at the shutdown deadline — has `$termSignal` set and `$graceful` false. For group workers, `$queue` holds the comma-separated queue list the worker polls and `$group` the group name; `$group` is null otherwise.
+| Property | Meaning |
+|---|---|
+| `$connection` | The queue connection the worker ran against |
+| `$queue` | The queue it polled. For a group worker, the comma-separated queue list it polled |
+| `$group` | The group name for a group worker, otherwise `null` |
+| `$pid` | The worker's process ID, or `null` if it never started |
+| `$exitCode` | The process exit code. A worker killed by a signal reports `128 + signal`, so SIGKILL reads `137` |
+| `$termSignal` | The signal that ended the process (`9` for SIGKILL, `15` for SIGTERM), or `null` when it exited on its own |
+| `$terminationRequested` | `true` when the manager had asked the worker to stop: a scale-down, a restart or shutdown |
+| `$uptimeSeconds` | Seconds from spawn until the manager noticed the exit |
+| `$graceful` | `true` when `queue:work` stopped itself cleanly: no terminating signal, and exit code `0` or `12` |
 
-During shutdown, an exception thrown by a `WorkerExited` listener is logged and ignored, so it cannot stop the manager from force-killing workers that ignore SIGTERM.
+`queue:work` exits `0` when it stops on request, at `--max-time`, on a restart signal or when its connection is lost, and `12` when it stops at its `--memory` limit. The autoscaler never passes `--memory`, so `12` appears only if your application sets that limit some other way. Any other exit is not graceful.
+
+How common exits read:
+
+| What happened | `$exitCode` | `$termSignal` | `$terminationRequested` | `$graceful` |
+|---|---|---|---|---|
+| Scale-down: the manager sent SIGTERM and the worker finished its job | `0` | `null` | `true` | `true` |
+| The worker reached `workers.max_time_seconds` (`--max-time`) | `0` | `null` | `false` | `true` |
+| A job ran past `workers.timeout_seconds`: `queue:work` SIGKILLs itself | `137` | `9` | `false` | `false` |
+| The kernel OOM-killed the worker | `137` | `9` | `false` | `false` |
+| The worker ignored SIGTERM past its shutdown timeout and the manager SIGKILLed it | `137` | `9` | `true` | `false` |
+| A fatal error or uncaught exception outside a job | `255` (or `1`) | `null` | `false` | `false` |
+
+A SIGKILL with `$terminationRequested` false is either a job timeout or something outside the manager, most often the OOM killer. The two are told apart by the log: `queue:work` reports the timeout before it kills itself, and the kernel logs the OOM kill (`dmesg`, or the container's OOM kill counter). See [Troubleshooting](troubleshooting.md#workers-spawn-but-die-within-seconds).
+
+The same details are logged as `Removed dead worker`, at `info` for a graceful exit and `warning` otherwise, with the context keys `pid`, `connection`, `queue`, `group`, `exit_code`, `term_signal`, `termination_requested` and `uptime_seconds`. With `-v`, the console line `Removed dead worker: PID …` is styled to match.
+
+During shutdown, an exception thrown by a `WorkerExited` listener is logged and ignored, so it cannot stop the manager from force-killing workers that ignore SIGTERM. Outside shutdown, a throwing listener is handled like any other error in an evaluation cycle: it is logged as `Autoscale evaluation failed`, the rest of that cycle is skipped, and the next cycle carries on. Keep listeners cheap and defensive, or queue the work they do.
+
+```php
+use Cbox\LaravelQueueAutoscale\Events\WorkerExited;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
+
+Event::listen(function (WorkerExited $event): void {
+    if ($event->graceful || $event->terminationRequested) {
+        return;
+    }
+
+    Log::warning('Queue worker died unexpectedly', [
+        'queue' => $event->queue,
+        'exit_code' => $event->exitCode,
+        'signal' => $event->termSignal,
+        'uptime_seconds' => $event->uptimeSeconds,
+        'possible_oom_or_timeout' => $event->termSignal === SIGKILL,
+    ]);
+});
+```
 
 **Use for:** crash alerting, spotting OOM kills, worker lifetime metrics.
 
@@ -316,7 +365,7 @@ $event->decision->capacity              // CapacityCalculationResult|null
 $event->decision->spawnCompensation     // SpawnCompensationConfiguration|null
 ```
 
-`$event->decision->capacity` (when present) exposes `maxWorkersByCpu`, `maxWorkersByMemory`, `maxWorkersByConfig`, `finalMaxWorkers`, and `limitingFactor` (one of `cpu`, `memory`, `config`, `strategy`).
+`$event->decision->capacity` (when present) exposes `maxWorkersByCpu`, `maxWorkersByMemory`, `maxWorkersByConfig`, `finalMaxWorkers`, `limitingFactor` (a `LimitingFactor` enum: `cpu`, `memory`, `balanced`, `config`, `strategy`, `fuse` or `system_metrics_unavailable`) and the `details` array, with the typed `cpuBreakdown()` and `memoryBreakdown()` accessors. See [Scaling Decision](../api-reference/scaling-decision.md) for every field.
 
 ### `WorkersScaled` Payload
 
