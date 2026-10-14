@@ -307,6 +307,15 @@ return [
         'worker_settle_seconds' => 30,
 
         /*
+         * When the kernel OOM-kills processes in this host's cgroup (read from
+         * the cgroup's OOM kill counter), hold the host's worker capacity at its
+         * current count for this many seconds instead of re-filling the memory
+         * the kill just freed. 0 disables. Has no effect where the counter is
+         * not available (outside Linux cgroups).
+         */
+        'oom_backoff_seconds' => env('QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS', 300),
+
+        /*
          * Hard ceiling on total workers this host may run, across every queue
          * and group. null means no ceiling.
          *

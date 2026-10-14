@@ -140,6 +140,12 @@ Per-queue bounds are separate and live in the queue's profile or override:
 ],
 ```
 
+### After OOM kills
+
+When the kernel OOM-kills processes on the host, the memory they held is freed, so the next capacity reading looks like room for more workers and the manager would spawn straight back into the limit that killed them. The calculator watches the cgroup's OOM kill counter (`SystemMetrics::container()->oomKillCount`). When it rises between readings, `finalMaxWorkers` is held at the worker count at that moment for `limits.oom_backoff_seconds` (default 300, env `QUEUE_AUTOSCALE_OOM_BACKOFF_SECONDS`, `0` disables), the limiting factor reads `memory`, and a warning is logged. `memory_details` carries `oom_backoff_ceiling` and `oom_backoff_until`.
+
+Only the counter triggers this. A worker dying from SIGKILL is not enough on its own, because `queue:work` also SIGKILLs itself when a job exceeds `--timeout`. Where the counter is not available (outside Linux cgroups) nothing changes.
+
 ## How the engine applies capacity
 
 `ScalingEngine::evaluate()`, in order:
