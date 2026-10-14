@@ -212,6 +212,8 @@ v3 introduces three new capabilities on top of per-queue autoscaling. Each is ex
 
 **When to use:** queues managed by another supervisor, throwaway queues during migrations, or queues with workers started manually via `queue:work` under systemd/supervisord.
 
+You do not need to exclude jobs run synchronously. The metrics package records them under the `sync` queue of whatever connection ran them, but queues discovered on a connection whose driver is `sync`, `deferred`, `background` or `null` are skipped automatically, because no worker can pop from them.
+
 ### `groups` — multi-queue workers with strict priority
 
 ```php

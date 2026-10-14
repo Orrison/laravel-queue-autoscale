@@ -471,6 +471,18 @@ readonly class AutoscaleConfiguration
     }
 
     /**
+     * Whether `queue:work` can pop jobs from a connection. Drivers that run jobs
+     * in-process (sync, deferred, background) or discard them (null) cannot.
+     * An unconfigured connection is not judged here.
+     */
+    public static function connectionCanBeWorked(string $connection): bool
+    {
+        $driver = config("queue.connections.{$connection}.driver");
+
+        return ! in_array($driver, ['sync', 'null', 'deferred', 'background'], true);
+    }
+
+    /**
      * Test whether a queue name matches any configured exclusion pattern.
      */
     public static function isExcluded(string $queue): bool

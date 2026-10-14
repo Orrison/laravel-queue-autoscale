@@ -35,7 +35,14 @@ class WorkloadDiscovery
         // Recalculate first so throughput reflects the current sliding window.
         app(CalculateQueueMetricsAction::class)->executeForAllQueues();
 
-        $allQueues = QueueMetrics::getAllQueuesWithMetrics();
+        // Jobs run synchronously still fire the queue events, so the metrics
+        // layer reports them as a queue (`sync` for SyncJob) on a connection
+        // no worker can ever pop from.
+        $allQueues = array_filter(
+            QueueMetrics::getAllQueuesWithMetrics(),
+            static fn (array $metrics): bool => ! is_string($metrics['connection'] ?? null)
+                || AutoscaleConfiguration::connectionCanBeWorked($metrics['connection']),
+        );
 
         // Configured queues may have no history yet. Fetching them directly is
         // what lets a newly declared queue be supervised from the first cycle
