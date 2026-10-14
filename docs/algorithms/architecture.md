@@ -310,22 +310,27 @@ usableCores            = max(totalCores - limits.reserve_cpu_cores, 0)
 availableCoreEquiv     = usableCores * (availableCpuPercent / 100)
 maxWorkersByCpu        = currentWorkers + floor(availableCoreEquiv / max(cpuCoresPerWorker, 0.01))
 
-availableMemoryPercent = max(limits.max_memory_percent - currentMemoryPercent, 0)
-maxWorkersByMemory     = currentWorkers + floor(
-                             totalMemoryMb * (availableMemoryPercent / 100)
-                             / max(memoryMbPerWorker, 1.0))
+headroomMb             = primary.limitMb * (limits.max_memory_percent / 100) - primary.usedMb,
+                         capped at every other scope's free memory,
+                         minus the memory booting workers have not grown into yet
+maxWorkersByMemory     = currentWorkers + floor(max(headroomMb, 0) / max(memoryMbPerWorker, 1.0))
 
-finalMaxWorkers        = max(min(maxWorkersByCpu, maxWorkersByMemory), 0)
+finalMaxWorkers        = max(min(maxWorkersByCpu, maxWorkersByMemory), 0),
+                         lowered to the OOM backoff ceiling while a hold is active
 ```
 
-The `currentWorkers +` term is mandatory: the measured percentages already include the running
-workers, so the division yields how many can be **added**.
+The `currentWorkers +` term is mandatory: the measured usage already includes the running workers,
+so the division yields how many can be **added**.
 
-Per-worker CPU and memory come from `ResourceEstimateResolver`, which resolves each dimension
-independently as measured > per-queue `resources` config > global `limits.*` default.
+The primary memory scope is `limits.memory_limit_mb` when set, else the container's cgroup limit
+(measured by working set), else the host. Per-worker CPU and memory come from
+`ResourceEstimateResolver`, which resolves each dimension independently as measured > per-queue
+`resources` config > global `limits.*` default, then floors memory at what the queue's live workers
+actually peak at.
 
-System metrics are cached for 4 seconds because `SystemMetrics::cpuUsage(1.0)` blocks for a full
-second. If `SystemMetrics::limits()` fails the calculator returns a fixed fallback of 5 workers with
+System metrics are cached for 4 seconds, so a tick reads the host once however many queues it
+evaluates. CPU usage is diffed against the previous tick's counters rather than sampled with a
+sleep. If `SystemMetrics::limits()` fails the calculator returns a fixed fallback of 5 workers with
 `limitingFactor: 'system_metrics_unavailable'`.
 
 Details and worked examples: [Resource Constraints](resource-constraints.md).
@@ -578,8 +583,8 @@ spikes. Five to ten seconds suits most workloads.
 ### Per-cycle cost
 
 - Strategy arithmetic is O(1) per queue, over an O(30) snapshot window.
-- The one blocking cost is `SystemMetrics::cpuUsage(1.0)` — one second — cached for 4 seconds and
-  therefore paid once per cycle, not once per queue.
+- System metrics are read once per 4-second cache window, not once per queue. CPU usage is the
+  difference from the previous tick's counters, so no part of the cycle sleeps to sample it.
 - Percentile computation is a sort over the pickup samples in the window
   (`pickup_time.max_samples_per_queue`, default 1000).
 
@@ -592,7 +597,8 @@ account for it: spawn compensation subtracts measured spawn latency (EMA) from t
 ### Memory footprint
 
 The default estimate is 128 MB per worker (`limits.worker_memory_mb_estimate`); override per queue
-with the `resources` key when a queue's jobs are heavier. The manager process itself is small
+with the `resources` key when a queue's jobs are heavier. On Linux the estimate is floored at the
+live workers' measured peak (`VmHWM`), so a low estimate corrects itself once workers are running. The manager process itself is small
 compared with the pool it supervises.
 
 ## Design decisions

@@ -189,6 +189,9 @@ The global `limits` section protects the host from runaway spawning:
     'worker_memory_mb_estimate' => 128, // Assumed memory per worker (fallback)
     'worker_cpu_core_estimate' => 0.2,  // Assumed CPU cores per worker (fallback)
     'reserve_cpu_cores' => 0.2,         // Cores kept for OS/other services
+    'memory_limit_mb' => null,          // A limit the process cannot see (pod/task level)
+    'worker_settle_seconds' => 30,      // Charge booting workers the memory still to come
+    'oom_backoff_seconds' => 300,       // Hold capacity after the kernel OOM-kills processes
 ],
 ```
 
@@ -203,20 +206,23 @@ $maxByCpu = $currentWorkers + floor(
     $availableCoreEquivalents / max($cpuCoresPerWorker, 0.01)
 );
 
-$availableMemoryPercent = max($limits['max_memory_percent'] - $currentMemoryPercent, 0);
+// $limitMb / $usedMb belong to the primary scope: memory_limit_mb, else the
+// container's cgroup limit, else the host.
+$headroomMb = $limitMb * ($limits['max_memory_percent'] / 100) - $usedMb;
+$headroomMb = min($headroomMb, $freeMbOfEveryOtherScope);
+$headroomMb = max(max($headroomMb, 0) - $settlingWorkerChargeMb, 0);
 
-$maxByMemory = $currentWorkers + floor(
-    $totalMemoryMb * ($availableMemoryPercent / 100) / max($memoryMbPerWorker, 1.0)
-);
+$maxByMemory = $currentWorkers + floor($headroomMb / max($memoryMbPerWorker, 1.0));
 
 $hostCeiling = max(min($maxByCpu, $maxByMemory), 0);
+// ...and no higher than the OOM backoff ceiling while a hold is active.
 ```
 
-`$cpuCoresPerWorker` and `$memoryMbPerWorker` default to `limits.worker_cpu_core_estimate` and `limits.worker_memory_mb_estimate`, and are replaced by measured per-queue values once enough samples exist (or by a per-queue `resources` override).
+`$cpuCoresPerWorker` and `$memoryMbPerWorker` default to `limits.worker_cpu_core_estimate` and `limits.worker_memory_mb_estimate`, and are replaced by measured per-queue values once enough samples exist (or by a per-queue `resources` override). On Linux, memory is also floored at what the queue's live workers actually peak at.
 
 The host ceiling is then divided among queues: each queue's share is `hostCeiling - (workers running for other queues)`, and the per-queue `workers.max` is applied on top of that.
 
-System metrics are cached for 4 seconds inside the capacity calculator, because reading system metrics is not free. If the system-metrics read fails entirely, the calculator falls back to a conservative fixed ceiling and reports `limitingFactor: 'system_metrics_unavailable'`.
+System metrics are cached for 4 seconds inside the capacity calculator, so a tick reads the host once however many queues it evaluates. CPU usage is diffed against the previous tick's counters, so nothing sleeps to sample it. If the system-metrics read fails entirely, the calculator falls back to a conservative fixed ceiling and reports `limitingFactor: 'system_metrics_unavailable'`.
 
 ### Cost of measuring pickup time
 

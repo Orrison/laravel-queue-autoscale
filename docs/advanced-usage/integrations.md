@@ -127,6 +127,11 @@ Each `managers[]` entry:
 
 The three `cpu_*_cores` fields are floats and can be fractional in cgroup-constrained environments.
 
+The four `memory_*` fields describe the memory limit capacity was sized against: `limits.memory_limit_mb`
+when set, else the container's cgroup limit (with usage measured as its working set), else the host. A
+manager in a 2 GB container on a 64 GB node reports `memory_total_mb` of 2048, not 65536.
+`max_workers` and `capacity_limiter` reflect an active OOM backoff hold.
+
 ### Workload fields
 
 Each `workloads[]` entry:

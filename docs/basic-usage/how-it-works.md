@@ -412,16 +412,20 @@ usableCores         = max(totalCores - limits.reserve_cpu_cores, 0)
 maxByCpu            = currentWorkers
                     + floor(usableCores × (availableCpuPercent/100) / cpuCoresPerWorker)
 
-availableMemPercent = max(limits.max_memory_percent - currentMemoryPercent, 0)
+headroomMb          = limitMb × (limits.max_memory_percent/100) − usedMb
+                      (capped at every other scope's free memory,
+                       minus memory still to come from booting workers)
 maxByMemory         = currentWorkers
-                    + floor(totalMemoryMb × (availableMemPercent/100) / memoryMbPerWorker)
+                    + floor(headroomMb / memoryMbPerWorker)
 
 finalMaxWorkers     = max(min(maxByCpu, maxByMemory), 0)
 ```
 
-The `currentWorkers +` term is essential: the CPU and memory those workers are already consuming is reflected in `currentCpuPercent` / `currentMemoryPercent`, so the calculation adds headroom to what exists rather than recomputing from zero.
+The `currentWorkers +` term is essential: the CPU and memory those workers are already consuming is reflected in the measured usage, so the calculation adds headroom to what exists rather than recomputing from zero.
 
-System metrics are cached for 4 seconds because reading system metrics is not free. If the read fails entirely, a conservative fixed fallback is returned with `limitingFactor: 'system_metrics_unavailable'`.
+`limitMb` and `usedMb` come from the most specific memory limit that governs the host: `limits.memory_limit_mb` if set, else the container's own cgroup limit (measured by working set, which leaves out reclaimable page cache), else the host's total memory. After the kernel OOM-kills processes in the manager's cgroup, the ceiling is also held at the current worker count for `limits.oom_backoff_seconds`. See [Resource Constraints](../algorithms/resource-constraints.md) for the details.
+
+System metrics are cached for 4 seconds, so one tick reads the host once. If the read fails entirely, a conservative fixed fallback is returned with `limitingFactor: 'system_metrics_unavailable'`.
 
 ### Configuration Limits
 
