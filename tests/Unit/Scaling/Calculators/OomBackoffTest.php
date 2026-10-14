@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Cbox\LaravelQueueAutoscale\Policies\NoScaleDownPolicy;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
+use Cbox\LaravelQueueAutoscale\Scaling\Calculators\OomBackoff;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
@@ -151,4 +152,88 @@ test('fixes the ceiling at the host total even when a per-queue caller asks firs
     ));
 
     expect(oomCapacity($this->calculator, 36))->toBe(36);
+});
+
+test('a second kill during a hold extends it and re-fixes the ceiling at the new count', function (): void {
+    $this->freezeTime();
+    $backoff = new OomBackoff;
+
+    $backoff->observe(0);
+    $backoff->observe(1);
+    expect($backoff->ceiling(36))->toBe(36);
+
+    $this->travel(200)->seconds();
+    $backoff->observe(2);
+
+    // The ceiling follows the count after the second kill, and the hold runs
+    // a full window from it rather than ending at the first kill's deadline.
+    expect($backoff->ceiling(30))->toBe(30)
+        ->and($backoff->holdUntil()?->equalTo(now()->addSeconds(300)))->toBeTrue();
+
+    $this->travel(150)->seconds();
+    expect($backoff->ceiling(40))->toBe(30);
+
+    expect($this->warnings)->toBe(2);
+});
+
+test('a counter that resets is re-baselined, and a rise after it holds again', function (): void {
+    $backoff = new OomBackoff;
+
+    $backoff->observe(7);
+    $backoff->observe(0);
+
+    expect($backoff->ceiling(20))->toBeNull()
+        ->and($backoff->holdUntil())->toBeNull();
+
+    $backoff->observe(1);
+
+    expect($backoff->ceiling(20))->toBe(20)
+        ->and($this->warnings)->toBe(1);
+});
+
+test('a reading the counter cannot provide keeps the previous baseline', function (): void {
+    $backoff = new OomBackoff;
+
+    $backoff->observe(3);
+    $backoff->observe(null);
+    $backoff->observe(4);
+
+    expect($backoff->ceiling(10))->toBe(10);
+});
+
+test('the hold ends exactly at its deadline and forgets the ceiling', function (): void {
+    $this->freezeTime();
+    $backoff = new OomBackoff;
+
+    $backoff->observe(0);
+    $backoff->observe(1);
+    expect($backoff->ceiling(12))->toBe(12);
+
+    $this->travel(299)->seconds();
+    expect($backoff->ceiling(15))->toBe(12);
+
+    $this->travel(1)->seconds();
+    expect($backoff->ceiling(15))->toBeNull()
+        ->and($backoff->holdUntil())->toBeNull();
+});
+
+test('a disabled backoff neither holds nor logs a kill', function (int $seconds): void {
+    config()->set('queue-autoscale.limits.oom_backoff_seconds', $seconds);
+    $backoff = new OomBackoff;
+
+    $backoff->observe(0);
+    $backoff->observe(5);
+
+    expect($backoff->ceiling(10))->toBeNull()
+        ->and($backoff->holdUntil())->toBeNull()
+        ->and($this->warnings)->toBe(0);
+})->with(['zero' => [0], 'negative' => [-60]]);
+
+test('the ceiling is never negative', function (): void {
+    $backoff = new OomBackoff;
+
+    $backoff->observe(0);
+    $backoff->observe(1);
+
+    expect($backoff->ceiling(-3))->toBe(0);
 });

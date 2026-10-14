@@ -266,3 +266,66 @@ it('ignores a workload reported with no worker peaks', function () {
     expect($resolver->resolve('redis', 'default')->memoryMbPerWorker)->toBe(128.0)
         ->and($resolver->hostEstimate()->memoryMbPerWorker)->toBe(200.0);
 });
+
+it('floors a workload at the p90 peak once it has ten or more live workers', function (array $peaks, float $expected) {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:default' => $peaks]);
+
+    $estimate = $resolver->resolve('redis', 'default');
+
+    expect($estimate->memoryMbPerWorker)->toBe($expected)
+        ->and($estimate->memorySampleCount)->toBe(count($peaks));
+})->with([
+    // Ten: the ninth-lowest, so the single 2000 MB outlier is ignored.
+    'ten workers, one outlier' => [[...array_fill(0, 9, 300.0), 2_000.0], 300.0],
+    // Eleven: ceil(9.9) - 1 = index 9, the tenth-lowest — still below the outlier.
+    'eleven workers, one outlier' => [[...array_fill(0, 10, 300.0), 2_000.0], 300.0],
+    // Eleven with two outliers: index 9 is the lower outlier.
+    'eleven workers, two outliers' => [[...array_fill(0, 9, 300.0), 2_000.0, 2_500.0], 2_000.0],
+]);
+
+it('keeps the configured estimate and its source when workers peak exactly at it', function () {
+    config()->set('queue-autoscale.queues', ['emails' => ['resources' => ['memory_mb' => 256]]]);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:emails' => [256.0]]);
+
+    $estimate = $resolver->resolve('redis', 'emails');
+
+    expect($estimate->memoryMbPerWorker)->toBe(256.0)
+        ->and($estimate->memorySource)->toBe(EstimateSource::Config)
+        ->and($estimate->memorySampleCount)->toBeNull();
+});
+
+it('floors a group workload under its group key, not its member queues', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+    config()->set('queue-autoscale.queues', []);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:notifications' => [400.0]]);
+
+    expect($resolver->resolve('redis', 'notifications')->memoryMbPerWorker)->toBe(400.0)
+        ->and($resolver->resolve('redis', 'emails')->memoryMbPerWorker)->toBe(128.0)
+        ->and($resolver->resolve('sqs', 'notifications')->memoryMbPerWorker)->toBe(128.0);
+});
+
+it('floors the host estimate at a single worker\'s peak and forgets it on reset', function () {
+    config()->set('queue-autoscale.limits.worker_memory_mb_estimate', 128);
+
+    $resolver = new ResourceEstimateResolver;
+    $resolver->observeWorkerPeakMemory(['redis:default' => [512.0]]);
+
+    $floored = $resolver->hostEstimate();
+
+    expect($floored->memoryMbPerWorker)->toBe(512.0)
+        ->and($floored->memorySource)->toBe(EstimateSource::Measured)
+        ->and($floored->memorySampleCount)->toBe(1);
+
+    $resolver->reset();
+
+    expect($resolver->hostEstimate()->memoryMbPerWorker)->toBe(128.0)
+        ->and($resolver->hostEstimate()->memorySource)->toBe(EstimateSource::Default);
+});

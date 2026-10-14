@@ -271,3 +271,160 @@ test('a settling worker whose resident memory cannot be read is charged in full'
 
     expect(memoryCapacity(currentWorkers: 1, calculator: $calculator)->details['memory_details']['headroom_mb'])->toBe(3_100.0);
 });
+
+test('with all three scopes present the configured limit governs and the tightest other scope caps it', function (int $cgroupLimitMb, int $hostAvailableMb, ?string $cappedBy, float $headroomMb): void {
+    // Container uses 3000 MB. Configured 8000 MB at 70% leaves 2600 MB.
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: $hostAvailableMb));
+    $this->fakes->container->set(cgroupMemory(limitMb: $cgroupLimitMb, usageMb: 3_000));
+    config()->set('queue-autoscale.limits.memory_limit_mb', 8_000);
+
+    $result = memoryCapacity();
+    $memory = $result->details['memory_details'];
+
+    expect($memory['memory_scope'])->toBe('configured')
+        ->and($memory['memory_capped_by'])->toBe($cappedBy)
+        ->and($memory['headroom_mb'])->toBe($headroomMb)
+        ->and($result->maxWorkersByMemory)->toBe((int) floor($headroomMb / 100));
+})->with([
+    'neither cgroup nor host is tighter' => [6_000, 10_000, null, 2_600.0],
+    'the cgroup has less free than the configured headroom' => [5_000, 10_000, 'cgroup', 2_000.0],
+    'the host has the least free of all' => [5_000, 1_500, 'host', 1_500.0],
+]);
+
+test('total and current percent describe the scope that governs, not the host', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 10_000));
+    $this->fakes->container->set(cgroupMemory(limitMb: 6_000, usageMb: 3_000));
+    config()->set('queue-autoscale.limits.memory_limit_mb', 8_000);
+
+    $memory = memoryCapacity()->details['memory_details'];
+
+    expect($memory['total_memory_mb'])->toBe(8_000.0)
+        ->and($memory['used_memory_mb'])->toBe(3_000.0)
+        ->and($memory['current_memory_percent'])->toBe(37.5)
+        // 2600 MB of headroom out of 8000 MB.
+        ->and($memory['available_memory_percent'])->toBe(32.5);
+});
+
+test('a configured limit with no readable container is measured against host usage', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 13_000));
+    $this->fakes->container->failWith(new SystemMetricsException('not a container'));
+    config()->set('queue-autoscale.limits.memory_limit_mb', 6_000);
+
+    $memory = memoryCapacity()->details['memory_details'];
+
+    // 70% of 6000 MB minus the host's 3000 MB in use.
+    expect($memory['memory_scope'])->toBe('configured')
+        ->and($memory['used_memory_mb'])->toBe(3_000.0)
+        ->and($memory['headroom_mb'])->toBe(1_200.0);
+});
+
+test('a configured limit that is not a positive number is ignored', function (mixed $configured): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+    config()->set('queue-autoscale.limits.memory_limit_mb', $configured);
+
+    expect(memoryCapacity()->details['memory_details']['memory_scope'])->toBe('host');
+})->with([
+    'zero' => [0],
+    'negative' => [-512],
+    'not a number' => ['unlimited'],
+    'empty env value' => [''],
+]);
+
+test('a configured limit given as an env string is honoured', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 15_000));
+    config()->set('queue-autoscale.limits.memory_limit_mb', '2048');
+
+    $memory = memoryCapacity()->details['memory_details'];
+
+    expect($memory['memory_scope'])->toBe('configured')
+        ->and($memory['total_memory_mb'])->toBe(2_048.0);
+});
+
+test('usage already above the ceiling leaves no headroom and no new workers', function (): void {
+    // 90% used under a 70% ceiling.
+    $this->fakes->memory->set(hostMemory(totalMb: 10_000, availableMb: 1_000));
+
+    $result = memoryCapacity(currentWorkers: 12);
+    $memory = $result->details['memory_details'];
+
+    expect($memory['headroom_mb'])->toBe(0.0)
+        ->and($memory['available_memory_percent'])->toBe(0.0)
+        ->and($result->maxWorkersByMemory)->toBe(12);
+});
+
+test('never charges more settling workers than the caller says are running', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+
+    $calculator = new CapacityCalculator;
+    $calculator->trackSettlingWorkersWith(fn (): array => settlingWorkers(8));
+
+    $memory = memoryCapacity(currentWorkers: 3, calculator: $calculator)->details['memory_details'];
+
+    // 3200 MB headroom less 3 x 100 MB, not 8 x 100 MB.
+    expect($memory['settling_workers'])->toBe(3)
+        ->and($memory['headroom_mb'])->toBe(2_900.0);
+});
+
+test('the settling charge cannot push headroom below zero', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+
+    $calculator = new CapacityCalculator;
+    $calculator->trackSettlingWorkersWith(fn (): array => settlingWorkers(40));
+
+    $result = memoryCapacity(currentWorkers: 40, calculator: $calculator);
+
+    expect($result->details['memory_details']['headroom_mb'])->toBe(0.0)
+        ->and($result->maxWorkersByMemory)->toBe(40);
+});
+
+test('the memory explanation names the governing scope and the scope that capped it', function (): void {
+    $this->fakes->memory->set(hostMemory(totalMb: 64_000, availableMb: 500));
+    $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 1_000));
+
+    expect(memoryCapacity()->details['memory_explanation'])
+        ->toBe('0.5GB available of 3.9GB (cgroup, capped by host free memory), 100MB/worker');
+});
+
+test('a working set of zero is used rather than falling back to raw usage', function (): void {
+    // Zero is a reading, not a missing value: only null falls back.
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 12_000));
+    $this->fakes->container->set(cgroupMemory(limitMb: 4_000, usageMb: 1_500, workingSetMb: 0));
+
+    expect(memoryCapacity()->details['memory_details']['used_memory_mb'])->toBe(0.0);
+});
+
+test('an active OOM hold reports its ceiling and when it ends', function (): void {
+    $this->freezeTime();
+    $this->fakes->memory->set(hostMemory(totalMb: 16_000, availableMb: 8_000));
+    config()->set('queue-autoscale.limits.oom_backoff_seconds', 120);
+
+    $calculator = new CapacityCalculator;
+    $this->fakes->container->set(new ContainerLimits(
+        cgroupVersion: CgroupVersion::V2,
+        cpuQuota: null,
+        memoryLimitBytes: null,
+        cpuUsageCores: null,
+        memoryUsageBytes: null,
+        cpuThrottledCount: null,
+        oomKillCount: 0,
+    ));
+    memoryCapacity(currentWorkers: 5, calculator: $calculator);
+
+    $this->fakes->container->set(new ContainerLimits(
+        cgroupVersion: CgroupVersion::V2,
+        cpuQuota: null,
+        memoryLimitBytes: null,
+        cpuUsageCores: null,
+        memoryUsageBytes: null,
+        cpuThrottledCount: null,
+        oomKillCount: 1,
+    ));
+    $calculator->invalidateCache();
+    $result = memoryCapacity(currentWorkers: 5, calculator: $calculator);
+    $memory = $result->memoryBreakdown();
+
+    expect($result->finalMaxWorkers)->toBe(5)
+        ->and($result->maxWorkersByMemory)->toBe(5)
+        ->and($memory->oomBackoffCeiling)->toBe(5)
+        ->and($memory->oomBackoffUntil)->toBe(now()->addSeconds(120)->toIso8601String());
+});
