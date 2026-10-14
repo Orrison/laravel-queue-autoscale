@@ -33,10 +33,13 @@ These are installed automatically via Composer:
 
 | Package | Version | Purpose |
 |---|---|---|
-| `cboxdk/laravel-queue-metrics` | ^3.4.1 | Queue discovery and metrics collection |
-| `cboxdk/system-metrics` | ^3.0 (via queue-metrics) | CPU and memory monitoring for resource-aware scaling |
+| `cboxdk/laravel-queue-metrics` | ^3.4.1 | Queue discovery and metrics collection. 3.4.1 records SQS jobs under the queue name and measures job duration from processing start |
+| `cboxdk/system-metrics` | ^3.1 | CPU, memory, cgroup working set and OOM kill counter for resource-aware scaling. 3.1 reads the real `oom_kill` counter on cgroup v1 |
+| `illuminate/contracts` | ^12.0 \|\| ^13.0 | The Laravel framework contracts |
 | `symfony/process` | ^7.0 \| ^8.0 | Worker process spawning and management |
-| `spatie/laravel-package-tools` | ^1.16 | Service provider conventions |
+
+The service provider is a plain Laravel `ServiceProvider`; the package has no other runtime
+dependencies. `cboxdk/laravel-telemetry` is optional and only listed under `suggest`.
 
 ## Infrastructure
 

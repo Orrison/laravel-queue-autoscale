@@ -19,13 +19,13 @@ From the package's `composer.json`:
 | `ext-posix` | required — worker liveness checks and termination |
 | `ext-mbstring` | required — character-boundary truncation of worker output |
 | `illuminate/contracts` | `^12.0 \|\| ^13.0` |
-| `cboxdk/laravel-queue-metrics` | `^3.4` |
+| `cboxdk/laravel-queue-metrics` | `^3.4.1` |
+| `cboxdk/system-metrics` | `^3.1` |
 | `symfony/process` | `^7.0 \|\| ^8.0` |
-| `spatie/laravel-package-tools` | `^1.16` |
 
 Notes:
 
-- `cboxdk/system-metrics` is **not** a direct requirement. It arrives transitively through `cboxdk/laravel-queue-metrics`, and the capacity calculator uses it from there.
+- `cboxdk/system-metrics` is a direct requirement from v4.4.1: the capacity calculator reads CPU, memory, the cgroup working set and the OOM kill counter from it. Earlier releases received it only through `cboxdk/laravel-queue-metrics`.
 - `cboxdk/laravel-telemetry` is optional (dev/suggest only). Install it if you want the autoscaler's gauges, counters and OTLP events; everything is a no-op without it. It requires Laravel 12+.
 - `ext-pcntl` and `ext-posix` are usually absent on Windows. Run the manager on Linux or macOS.
 
