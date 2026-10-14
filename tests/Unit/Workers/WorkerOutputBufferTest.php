@@ -237,3 +237,18 @@ it('falls back to reading the pid off a live process when none is given', functi
     $input->close();
     $process->wait();
 });
+
+it('releases the last partial line of a worker that has exited', function (): void {
+    $worker = bufferedOutputWorker(pid: 42, stdoutChunks: ['done'], stderrChunks: ['last words'], running: false);
+
+    expect($this->buffer->collectOutput([$worker]))->toBe([42 => ['done']])
+        ->and($this->buffer->collectErrorOutput([$worker]))->toBe([42 => ['last words']]);
+});
+
+it('releases a partial line held from before the worker exited', function (): void {
+    $running = bufferedOutputWorker(pid: 42, stderrChunks: ['half a ']);
+    $exited = bufferedOutputWorker(pid: 42, stderrChunks: ['line'], running: false);
+
+    expect($this->buffer->collectErrorOutput([$running]))->toBe([])
+        ->and($this->buffer->collectErrorOutput([$exited]))->toBe([42 => ['half a line']]);
+});

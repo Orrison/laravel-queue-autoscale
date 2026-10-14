@@ -56,6 +56,8 @@ The output names the limiting factor for every queue.
 
 **Symptoms:** Log shows `Worker spawned PID=X`, then `Worker did not stop gracefully` or `Removed dead worker` a moment later.
 
+`Removed dead worker` carries how the worker ended: `exit_code`, `term_signal`, `termination_requested` and `uptime_seconds`. It is logged at `info` when `queue:work` stopped itself cleanly (exit `0`, or `12` at its `--memory` limit) and at `warning` otherwise. A `term_signal` of `9` with `termination_requested` false means the worker was killed without the manager asking: either a job ran past `--timeout` (`queue:work` SIGKILLs itself, after logging the timeout) or something outside the manager killed it, most often the kernel's OOM killer. The same details are dispatched as the `WorkerExited` event.
+
 **Most common causes:**
 
 1. **The `queue:work` invocation fails.** Run the exact command the manager uses, manually, as the same user:

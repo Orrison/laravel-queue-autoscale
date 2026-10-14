@@ -8,6 +8,7 @@ use Cbox\LaravelQueueAutoscale\Alerting\AlertRateLimiter;
 use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\GroupConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
+use Cbox\LaravelQueueAutoscale\Events\WorkerExited;
 use Cbox\LaravelQueueAutoscale\Events\WorkersScaled;
 use Cbox\LaravelQueueAutoscale\Output\ConsoleReporter;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
@@ -409,11 +410,43 @@ class WorkerScaler
 
             $this->reporter->verbose("   💀 Removed dead worker: PID {$worker->pid()}", 'warn');
 
-            Log::channel(AutoscaleConfiguration::logChannel())->warning(
-                'Removed dead worker',
-                ['pid' => $worker->pid()]
-            );
+            $this->reportExit($worker);
         }
+    }
+
+    /**
+     * Log and announce how a worker ended, so a crashed or killed worker can
+     * be told apart from one that stopped itself.
+     */
+    private function reportExit(WorkerProcess $worker): void
+    {
+        $exit = WorkerExitStatus::of($worker);
+
+        $context = [
+            'pid' => $worker->pid(),
+            'connection' => $worker->connection,
+            'queue' => $worker->queue,
+            'group' => $worker->group,
+            ...$exit->toArray(),
+        ];
+
+        Log::channel(AutoscaleConfiguration::logChannel())->log(
+            $exit->isGraceful() ? 'info' : 'warning',
+            'Removed dead worker',
+            $context,
+        );
+
+        event(new WorkerExited(
+            connection: $worker->connection,
+            queue: $worker->queue,
+            group: $worker->group,
+            pid: $worker->pid(),
+            exitCode: $exit->exitCode,
+            termSignal: $exit->termSignal,
+            terminationRequested: $exit->terminationRequested,
+            uptimeSeconds: $exit->uptimeSeconds,
+            graceful: $exit->isGraceful(),
+        ));
     }
 
     public function enforceTerminationDeadlines(): void
