@@ -173,6 +173,33 @@ class FuseTripped
 
 **Use for:** incident alerting, incident duration metrics. See [Alert on a Fuse Trip](../cookbook/alert-on-fuse-trip.md).
 
+### `WorkerExited`
+
+Fired once for every worker process the manager finds has exited, whether it crashed, was killed, or stopped itself — including while the manager is shutting down.
+
+```php
+class WorkerExited
+{
+    public function __construct(
+        public readonly string $connection,
+        public readonly string $queue,
+        public readonly ?string $group,
+        public readonly ?int $pid,
+        public readonly ?int $exitCode,
+        public readonly ?int $termSignal,          // signal that killed it, e.g. 9 for SIGKILL
+        public readonly bool $terminationRequested, // the manager asked it to stop
+        public readonly int $uptimeSeconds,
+        public readonly bool $graceful,
+    ) {}
+}
+```
+
+`$graceful` is true when the worker stopped itself normally: exit code 0, or the code `queue:work` uses when it hits its memory limit, with no terminating signal. A worker that was SIGKILLed — by the kernel's OOM killer, by `queue:work` itself when a job exceeds `--timeout`, or by the manager at the shutdown deadline — has `$termSignal` set and `$graceful` false. For group workers, `$queue` holds the comma-separated queue list the worker polls and `$group` the group name; `$group` is null otherwise.
+
+During shutdown, an exception thrown by a `WorkerExited` listener is logged and ignored, so it cannot stop the manager from force-killing workers that ignore SIGTERM.
+
+**Use for:** crash alerting, spotting OOM kills, worker lifetime metrics.
+
 ## Listening to Events
 
 ### Method 1: Event Listeners

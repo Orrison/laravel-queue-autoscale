@@ -177,12 +177,13 @@ return [
 
         /*
          * Pickup time needs `pushedAt` in the job payload, which only Horizon
-         * writes. Enable this to stamp it on every job dispatched without one.
+         * writes. Enable this to stamp it on every dispatched job (Horizon
+         * overwrites the stamp with its own, from the same moment).
          *
-         * laravel-queue-metrics releases before the fix that measures job
-         * duration from processing start (rather than from `pushedAt`) will
-         * then record queue wait as part of every job's duration. Only enable
-         * this with a version that has that fix.
+         * laravel-queue-metrics v3.4.0 and earlier measure job duration from
+         * `pushedAt`, so they would then record queue wait as part of every
+         * job's duration. Only enable this with the release after v3.4.0,
+         * which measures it from processing start.
          */
         'stamp_pushed_at' => env('QUEUE_AUTOSCALE_STAMP_PUSHED_AT', false),
     ],

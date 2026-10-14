@@ -545,9 +545,11 @@ Per-queue SLA targets are **not** env-driven — they live in profile classes or
 
 ### Where pickup time comes from
 
-A pickup sample is the time between a job becoming available and a worker starting it, measured from the payload's `pushedAt` plus any dispatch delay. Only a job's first attempt is sampled: a released or retried job keeps its original `pushedAt`. Samples above `pickup_time.max_sample_seconds` are dropped, which covers failed jobs re-pushed with `queue:retry`. Keep the cap well above your largest SLA target: a breach is a sample above the target, so a cap at or below it drops every breach and the queue always reads as healthy. `queue:autoscale:doctor` warns when that happens.
+A pickup sample is the time between a job becoming available and a worker starting it, measured from the payload's `pushedAt` plus any dispatch delay. Excluding the dispatch delay relies on the `delay` key Laravel writes into the job payload from Laravel 12.11; on earlier releases a delayed job's sample includes its delay. Only a job's first attempt is sampled: a released or retried job keeps its original `pushedAt`. Samples above `pickup_time.max_sample_seconds` are dropped, which covers failed jobs re-pushed with `queue:retry`. Keep the cap well above your largest SLA target: a breach is a sample above the target, so a cap at or below it drops every breach and the queue always reads as healthy. `queue:autoscale:doctor` warns when that happens.
 
-Horizon writes `pushedAt`; plain Laravel does not. Without it there are no pickup samples and the strategy falls back to the oldest job's age, which some drivers (SQS among them) cannot report. Set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` to stamp it on every dispatched job that lacks one. Only do so with a `cboxdk/laravel-queue-metrics` version that measures job duration from processing start; older versions measure it from `pushedAt` and would count queue wait as job time.
+Horizon writes `pushedAt`; plain Laravel does not. Without it there are no pickup samples and the strategy falls back to the oldest job's age, which some drivers (SQS among them) cannot report. Set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` to stamp it on every dispatched job. Under Horizon the stamp is harmless: Horizon writes its own `pushedAt` when it pushes the job, overwriting the stamp with a timestamp from the same moment, so samples are the same either way.
+
+Only enable stamping with the `cboxdk/laravel-queue-metrics` release after v3.4.0, which measures job duration from when processing starts. v3.4.0 and earlier measure it from `pushedAt` when one is present, so stamping it would count every job's queue wait as job time and inflate the duration the scaling maths relies on.
 
 ## Configuration Patterns
 
