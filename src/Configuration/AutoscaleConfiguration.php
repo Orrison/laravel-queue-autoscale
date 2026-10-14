@@ -393,6 +393,18 @@ readonly class AutoscaleConfiguration
         return self::intConfig('queue-autoscale.limits.worker_memory_mb_estimate', 128);
     }
 
+    public static function memoryLimitMb(): ?float
+    {
+        $configured = config('queue-autoscale.limits.memory_limit_mb');
+
+        return is_numeric($configured) && (float) $configured > 0 ? (float) $configured : null;
+    }
+
+    public static function workerSettleSeconds(): int
+    {
+        return max(self::intConfig('queue-autoscale.limits.worker_settle_seconds', 30), 0);
+    }
+
     public static function workerCpuCoreEstimate(): float
     {
         return self::floatConfig('queue-autoscale.limits.worker_cpu_core_estimate', 0.2);

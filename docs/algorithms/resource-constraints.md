@@ -62,11 +62,11 @@ usableCores            = max(totalCores - limits.reserve_cpu_cores, 0)
 availableCoreEquiv     = usableCores * (availableCpuPercent / 100)
 maxWorkersByCpu        = currentWorkers + floor(availableCoreEquiv / max(cpuCoresPerWorker, 0.01))
 
-availableMemoryPercent = max(limits.max_memory_percent - currentMemoryPercent, 0)
-maxWorkersByMemory     = currentWorkers + floor(
-                             totalMemoryMb * (availableMemoryPercent / 100)
-                             / max(memoryMbPerWorker, 1.0)
-                         )
+headroomMb             = min(
+                             limitMb * (limits.max_memory_percent / 100) - usedMb,
+                             free memory of every other scope that applies
+                         ) - settlingWorkers * memoryMbPerWorker
+maxWorkersByMemory     = currentWorkers + floor(max(headroomMb, 0) / max(memoryMbPerWorker, 1.0))
 
 finalMaxWorkers        = max(min(maxWorkersByCpu, maxWorkersByMemory), 0)
 ```
@@ -79,10 +79,28 @@ autoscaler terminate workers it had just decided were affordable.
 `limitingFactor` is `'cpu'` when `maxWorkersByCpu < maxWorkersByMemory`, `'memory'` in the reverse
 case, and `'balanced'` when they are equal.
 
+### Which memory limit applies
+
+Memory is read in up to three scopes, each pairing a limit with usage measured against that same limit:
+
+| Scope | Limit | Used | Applies when |
+|---|---|---|---|
+| `host` | `MemTotal` | `MemTotal - MemAvailable` | always (Linux `/proc/meminfo`, or the platform equivalent) |
+| `cgroup` | the container's `memory.max` / `memory.limit_in_bytes` | the cgroup's usage | the container has its own memory limit |
+| `configured` | `limits.memory_limit_mb` | the cgroup's usage, else the host's | it is set |
+
+`max_memory_percent` applies to the most specific scope (`configured`, else `cgroup`, else `host`). Every other scope caps the headroom at what it has free, so a container on a crowded node cannot claim memory the node does not have. `MemAvailable` already excludes reclaimable page cache.
+
+A process cannot see a memory limit set only on a parent cgroup, such as a Kubernetes pod-level limit or an Amazon ECS task-level limit with no container limit. There the host scope applies, and in a VM-backed container it can describe far more memory than the container may use. Give the container its own limit, or set `limits.memory_limit_mb` (`QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`).
+
+### Workers that are still booting
+
+A worker grows to its footprint while it boots (loading the framework, filling OPcache), so its memory does not show as used straight away. Workers spawned within `limits.worker_settle_seconds` (default 30) are charged their full `memoryMbPerWorker` on top of current usage. Without this, a batch spawned in one cycle reads as free memory in the next, and the next batch overshoots.
+
 ### System metrics and caching
 
-Live values come from `SystemMetrics`: `limits()` for total cores and total memory, `cpuUsage(1.0)`
-for current CPU, `memory()` for current memory. The CPU sample **blocks for one second**, so results
+Live values come from `SystemMetrics`: `limits()` for total cores, `cpuUsage(1.0)`
+for current CPU, `memory()` and `container()` for memory (see above). The CPU sample **blocks for one second**, so results
 are cached for `CACHE_TTL_SECONDS = 4.0` — one measurement per evaluation tick, not one per queue.
 `invalidateCache()` forces a fresh read.
 
@@ -92,7 +110,7 @@ Degradation is layered:
   returned: `maxWorkersByCpu: 5`, `maxWorkersByMemory: 5`, `maxWorkersByConfig: PHP_INT_MAX`,
   `finalMaxWorkers: 5`, `limitingFactor: 'system_metrics_unavailable'`.
 - Only the CPU read fails — current CPU is assumed to be `50.0%`.
-- Only the memory read fails — current memory is assumed to be `50.0%`, total memory `4096.0` MB.
+- No memory scope can be read — current memory is assumed to be `50.0%` of the total `limits()` reports.
 
 ### Configuration
 
@@ -104,6 +122,8 @@ Degradation is layered:
     'worker_memory_mb_estimate' => 128, // default MB per worker
     'worker_cpu_core_estimate' => 0.2,  // default cores per worker
     'reserve_cpu_cores' => 0.2,         // cores held back for the OS and the manager
+    'memory_limit_mb' => null,          // explicit memory limit, for one this process cannot see
+    'worker_settle_seconds' => 30,      // how long a new worker is charged its full memory estimate
 ],
 ```
 
