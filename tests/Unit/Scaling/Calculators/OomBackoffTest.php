@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
+use Cbox\LaravelQueueAutoscale\Policies\NoScaleDownPolicy;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\ResourceEstimate;
+use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
 use Cbox\SystemMetrics\DTO\Metrics\Container\CgroupVersion;
 use Cbox\SystemMetrics\DTO\Metrics\Container\ContainerLimits;
 use Cbox\SystemMetrics\DTO\Metrics\LimitSource;
@@ -120,4 +122,33 @@ test('can be disabled', function (): void {
     oomKillsSoFar($this->fakes, 3);
 
     expect(oomCapacity($this->calculator, 36))->toBeGreaterThan(36);
+});
+
+test('fixes the ceiling at the host total even when a per-queue caller asks first', function (): void {
+    $hostWorkers = 40;
+    $this->calculator->countHostWorkersWith(function () use (&$hostWorkers): int {
+        return $hostWorkers;
+    });
+
+    oomKillsSoFar($this->fakes, 0);
+    oomCapacity($this->calculator, 40);
+
+    oomKillsSoFar($this->fakes, 1);
+    $hostWorkers = 36;
+    $this->calculator->invalidateCache();
+
+    // NoScaleDownPolicy passes one queue's count (here 4); the ceiling must
+    // still be the host's 36, or every other queue is clamped to nothing.
+    $policy = new NoScaleDownPolicy($this->calculator);
+    $policy->beforeScaling(new ScalingDecision(
+        connection: 'redis',
+        queue: 'emails',
+        currentWorkers: 4,
+        targetWorkers: 2,
+        reason: 'idle',
+        predictedPickupTime: null,
+        slaTarget: 30,
+    ));
+
+    expect(oomCapacity($this->calculator, 36))->toBe(36);
 });

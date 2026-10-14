@@ -41,6 +41,9 @@ class CapacityCalculator
     /** @var (Closure(): int)|null */
     private ?Closure $settlingWorkerCounter = null;
 
+    /** @var (Closure(): int)|null */
+    private ?Closure $hostWorkerCounter = null;
+
     private ?OomBackoff $oomBackoff = null;
 
     /**
@@ -132,7 +135,7 @@ class CapacityCalculator
             default => LimitingFactor::Balanced,
         };
 
-        $oomCeiling = $this->oomBackoff()->ceiling($currentWorkers);
+        $oomCeiling = $this->oomBackoff()->ceiling($this->hostWorkerCount($currentWorkers));
 
         if ($oomCeiling !== null && $oomCeiling < $finalMaxWorkers) {
             $finalMaxWorkers = $oomCeiling;
@@ -211,6 +214,37 @@ class CapacityCalculator
     public function countSettlingWorkersWith(?Closure $counter): void
     {
         $this->settlingWorkerCounter = $counter;
+    }
+
+    /**
+     * Supply how many workers are running on this host in total. The manager
+     * owns the pool, so it provides the count.
+     *
+     * The OOM backoff fixes its ceiling at the worker count the first time it
+     * is asked after a kill, and that must be the host's total. Callers pass
+     * different counts as `$currentWorkers` — the scaling engine and cluster
+     * heartbeat the host total, NoScaleDownPolicy a single queue's — so
+     * whichever ran first would otherwise decide the ceiling, and a per-queue
+     * count would clamp the whole host down to one queue's workers.
+     *
+     * @param  (Closure(): int)|null  $counter
+     */
+    public function countHostWorkersWith(?Closure $counter): void
+    {
+        $this->hostWorkerCounter = $counter;
+    }
+
+    /**
+     * The host's total worker count, or the caller's count when no counter is
+     * supplied (a calculator used outside the manager).
+     */
+    private function hostWorkerCount(int $currentWorkers): int
+    {
+        if ($this->hostWorkerCounter === null) {
+            return $currentWorkers;
+        }
+
+        return max(($this->hostWorkerCounter)(), $currentWorkers);
     }
 
     /**

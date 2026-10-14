@@ -186,6 +186,7 @@ class AutoscaleManager
         $this->capacity->countSettlingWorkersWith(
             fn (): int => $this->pool->settlingCount(AutoscaleConfiguration::workerSettleSeconds()),
         );
+        $this->capacity->countHostWorkersWith(fn (): int => $this->pool->totalCount());
     }
 
     public function configure(int $interval): void
