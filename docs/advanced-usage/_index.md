@@ -14,7 +14,8 @@ with [How It Works](../basic-usage/how-it-works.md) and
 ## Upgrading
 
 - **[Upgrading to v4](upgrade-guide-v4.md)** - PHP 8.4, the split worker timeouts, the removed
-  global `workers` block and the renamed cluster metrics.
+  global `workers` block and the renamed cluster metrics, plus the behaviour changes between v4
+  minor releases (memory scopes, OOM backoff and SQS pickup samples in 4.4).
 - **[Upgrading from v2 to v3](upgrade-guide-v3.md)** - Renamed APIs, the restructured config, and
   what the migration command actually does
 

@@ -1,6 +1,6 @@
 ---
 title: "Upgrading to v4"
-description: "Every breaking change from v3, what it means, and what to do about it"
+description: "Every breaking change from v3, what it means and what to do, plus the behaviour changes between v4 minor releases"
 weight: 91
 ---
 
@@ -132,3 +132,88 @@ These are additive. Listed so you know they exist:
 - [ ] Dashboards and alerts updated for the renamed metrics
 - [ ] `php artisan queue:autoscale:doctor` run and its output read — it flags both of the
       configuration changes above if you miss them
+
+## Upgrading within v4
+
+Minor releases add no breaking API changes, but some change what the autoscaler measures, and so
+how many workers it runs. Read the section for each minor you cross.
+
+### 4.3 to 4.4
+
+```bash
+composer require cboxdk/laravel-queue-autoscale:^4.4
+php artisan queue:autoscale:doctor
+```
+
+Then restart every `queue:autoscale` process. If you published the config file, the new keys fall
+back to their defaults; copy them in only to change them.
+
+**Requirements.** `cboxdk/laravel-queue-metrics` ^3.4.1 is required: it records SQS jobs under the
+queue name and measures job duration from processing start. From 4.4.1, `cboxdk/system-metrics`
+^3.1 is a declared dependency, which reads the cgroup working set and the real `oom_kill` counter on
+cgroup v1.
+
+**Memory capacity is computed differently.** 4.3 applied the host's used-memory percentage to
+whatever total `SystemMetrics::limits()` reported, which mixed a container's limit with the host's
+usage. 4.4 measures each scope (`configured`, `cgroup`, `host`) as a limit with its own usage,
+applies `limits.max_memory_percent` to the most specific one, and caps the result at every other
+scope's free memory. Expect different memory ceilings inside containers — usually lower, and
+correct. Three more inputs can lower them:
+
+- Workers spawned within `limits.worker_settle_seconds` (default 30) are charged the memory they have
+  not grown into yet, so fewer workers are added in the cycle after a scale-up.
+- On Linux, the per-worker estimate is floored at what the queue's live workers actually peak at
+  (`VmHWM`), so a `worker_memory_mb_estimate` set below reality no longer holds.
+- After the kernel OOM-kills processes in the manager's cgroup, capacity is held for
+  `limits.oom_backoff_seconds` (default 300). Set it to `0` to turn this off.
+
+From 4.4.1 the cgroup scope uses the working set, so a container that writes a lot of files is no
+longer read as nearly full.
+
+**Pod- and task-level memory limits need configuring.** If the manager runs in Kubernetes or ECS
+with a memory limit only at the pod or task level, set `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB` — the
+container cannot see that limit. See [Kubernetes and Amazon ECS](../deployment/kubernetes-ecs.md).
+
+**`memory_details` describes the chosen scope.** `total_memory_mb` and `current_memory_percent` now
+describe the limit `max_memory_percent` applied to, not always the host. New keys are added
+(`used_memory_mb`, `headroom_mb`, `memory_scope`, `memory_capped_by`, `settling_workers`,
+`oom_backoff_ceiling`, `oom_backoff_until`) and `MemoryBreakdown` has matching properties. The
+cluster heartbeat's `memory_*` fields and the `queue_autoscale_cluster_host_memory_percent` gauge
+follow the same scope, so a dashboard of containers will show their own limits instead of their
+nodes'. See [Scaling Decision](../api-reference/scaling-decision.md#the-details-array).
+
+**Pickup time excludes delays and retries.** A delayed job is measured from when its delay ends
+(Laravel 12.11+ writes the delay into the payload), only a job's first attempt is sampled, and
+samples above `pickup_time.max_sample_seconds` (default 3600) are dropped. Measured pickup p95s on
+queues with delayed or retried jobs will fall. If any queue's `sla.target_seconds` is 3600 or more,
+raise the cap — the doctor warns about it.
+
+**SQS queues start reporting.** On SQS, pickup samples and failure-fuse outcomes were recorded under
+the queue URL and never reached the manager. From 4.4 they are recorded under the queue name, so:
+
+- the hybrid strategy gets its p95 signal on SQS (with `stamp_pushed_at` and a Redis pickup store),
+- the failure fuse can now trip on SQS queues, which it never could before,
+- `excluded` patterns now match SQS queues.
+
+See [Running on Amazon SQS](../deployment/amazon-sqs.md), including the new
+`pickup_time.stamp_pushed_at` setting.
+
+**Unworkable connections are skipped.** Queues on `sync`, `null`, `deferred` and `background`
+connections are no longer discovered by the manager or listed by the doctor. A configuration rule
+that only matched such a queue now reports as matching nothing.
+
+**Worker exits are reported.** Every exit dispatches the new `WorkerExited` event and logs
+`Removed dead worker` with `exit_code`, `term_signal`, `termination_requested` and
+`uptime_seconds`. Clean exits now log at `info` instead of `warning`, so an alert on that warning
+fires less often — and only for crashes and kills. A `WorkerExited` listener that throws outside
+shutdown aborts the rest of that evaluation cycle, so keep listeners cheap. See
+[Event Handling](../basic-usage/event-handling.md#workerexited).
+
+#### 4.4 checklist
+
+- [ ] `composer update` pulled `laravel-queue-metrics` 3.4.1+ and `system-metrics` 3.1+
+- [ ] Every `queue:autoscale` process restarted
+- [ ] `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB` set where only a pod- or task-level limit exists
+- [ ] Dashboards reading `total_memory_mb` / `current_memory_percent` checked against the new scope
+- [ ] On SQS: `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true`, and a Redis pickup store on a single host
+- [ ] `php artisan queue:autoscale:doctor` run, with no pickup-cap warning
