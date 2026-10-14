@@ -491,6 +491,12 @@ QUEUE_AUTOSCALE_HONOR_QUEUE_RESTART=true
 QUEUE_AUTOSCALE_PICKUP_TIME_STORE=auto
 QUEUE_AUTOSCALE_SPAWN_LATENCY_TRACKER=auto
 
+# Pickup-time samples above this are dropped (seconds; empty keeps all)
+QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS=3600
+
+# Stamp pushedAt on dispatch so pickup time works without Horizon
+QUEUE_AUTOSCALE_STAMP_PUSHED_AT=false
+
 # Enable only when multiple managers run against the same queues
 QUEUE_AUTOSCALE_CLUSTER_ENABLED=false
 
@@ -530,6 +536,12 @@ Per-queue SLA targets are **not** env-driven — they live in profile classes or
 - `QUEUE_AUTOSCALE_SPAWN_LATENCY_TRACKER=auto` follows the same rule for spawn-latency compensation.
 - Set either key to `redis` if you want Redis-backed predictive signals on a single host.
 - Set either key to `null` if you want to force fallback behaviour even when Redis exists.
+
+### Where pickup time comes from
+
+A pickup sample is the time between a job becoming available and a worker starting it, measured from the payload's `pushedAt` plus any dispatch delay. Only a job's first attempt is sampled: a released or retried job keeps its original `pushedAt`. Samples above `pickup_time.max_sample_seconds` are dropped, which covers failed jobs re-pushed with `queue:retry`.
+
+Horizon writes `pushedAt`; plain Laravel does not. Without it there are no pickup samples and the strategy falls back to the oldest job's age, which some drivers (SQS among them) cannot report. Set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` to stamp it on every dispatched job that lacks one. Only do so with a `cboxdk/laravel-queue-metrics` version that measures job duration from processing start; older versions measure it from `pushedAt` and would count queue wait as job time.
 
 ## Configuration Patterns
 

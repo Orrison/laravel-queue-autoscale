@@ -30,6 +30,7 @@ use Cbox\LaravelQueueAutoscale\Manager\SignalHandler;
 use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
 use Cbox\LaravelQueueAutoscale\Pickup\PickupSampler;
 use Cbox\LaravelQueueAutoscale\Pickup\PickupTimeRecorder;
+use Cbox\LaravelQueueAutoscale\Pickup\PushedAtStamper;
 use Cbox\LaravelQueueAutoscale\Pickup\RedisPickupTimeStore;
 use Cbox\LaravelQueueAutoscale\Pickup\SortBasedPercentileCalculator;
 use Cbox\LaravelQueueAutoscale\Policies\PolicyExecutor;
@@ -58,6 +59,7 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Queue;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 
@@ -248,6 +250,8 @@ class LaravelQueueAutoscaleServiceProvider extends ServiceProvider
             JobExceptionOccurred::class,
             [JobOutcomeRecorder::class, 'handleException'],
         );
+
+        Queue::createPayloadUsing(new PushedAtStamper);
 
         $this->registerTelemetryIntegration();
     }
