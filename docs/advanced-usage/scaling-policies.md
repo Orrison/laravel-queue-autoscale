@@ -380,7 +380,7 @@ if ($decision->capacity?->limitingFactor === LimitingFactor::Fuse) {
 | `maxWorkersByConfig` | `workers.max` for this queue |
 | `finalMaxWorkers` | The engine's final target — **the same number as `targetWorkers`**, not the raw system maximum |
 | `limitingFactor` | `'config' \| 'strategy' \| 'cpu' \| 'memory' \| 'balanced' \| 'fuse' \| 'system_metrics_unavailable'` |
-| `details` | Raw sample values used for the calculation |
+| `details` | The CPU and memory inputs behind the calculation, including the memory scope, settling workers and any OOM hold. See [Scaling Decision](../api-reference/scaling-decision.md#the-details-array) |
 
 If you need the untouched host ceiling rather than the final target, resolve
 `CapacityCalculator` yourself — see `NoScaleDownPolicy` below.
