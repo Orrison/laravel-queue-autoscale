@@ -505,6 +505,10 @@ QUEUE_AUTOSCALE_CLUSTER_ENABLED=false
 # Fallback job time when metrics aren't available yet (seconds)
 QUEUE_AUTOSCALE_FALLBACK_JOB_TIME=2.0
 
+# Memory limit (MB) to size workers against, when the container cannot see its own
+# (e.g. a pod- or task-level limit only). Leave unset to detect it.
+QUEUE_AUTOSCALE_MEMORY_LIMIT_MB=
+
 # Alert cooldown for BreachNotificationPolicy / AlertRateLimiter (seconds)
 QUEUE_AUTOSCALE_ALERT_COOLDOWN=300
 

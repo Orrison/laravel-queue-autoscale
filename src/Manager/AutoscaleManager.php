@@ -181,6 +181,10 @@ class AutoscaleManager
             $alerts,
             $this->outputBuffer,
         );
+
+        $this->capacity->countSettlingWorkersWith(
+            fn (): int => $this->pool->settlingCount(AutoscaleConfiguration::workerSettleSeconds()),
+        );
     }
 
     public function configure(int $interval): void

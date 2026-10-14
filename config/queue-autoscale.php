@@ -290,6 +290,23 @@ return [
         'reserve_cpu_cores' => 0.2,
 
         /*
+         * Memory limit (MB) to size workers against, for a limit this process
+         * cannot see: one set only on a parent cgroup (a Kubernetes pod-level
+         * limit, an ECS task-level limit, a systemd slice). Inside a container
+         * that has its own limit, or on a VM or bare host, leave it null and
+         * the limit is detected. max_memory_percent applies to this limit.
+         */
+        'memory_limit_mb' => env('QUEUE_AUTOSCALE_MEMORY_LIMIT_MB'),
+
+        /*
+         * How long a newly spawned worker is charged its full memory estimate
+         * instead of what it uses so far. A worker grows to its footprint while
+         * it boots, so without this a batch spawned in one cycle reads as free
+         * memory in the next and the following batch overshoots.
+         */
+        'worker_settle_seconds' => 30,
+
+        /*
          * Hard ceiling on total workers this host may run, across every queue
          * and group. null means no ceiling.
          *

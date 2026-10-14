@@ -160,6 +160,23 @@ class WorkerPool
     }
 
     /**
+     * Running workers spawned within the last $seconds, which may not have
+     * grown to their memory footprint yet.
+     */
+    public function settlingCount(int $seconds): int
+    {
+        if ($seconds <= 0) {
+            return 0;
+        }
+
+        $since = now()->subSeconds($seconds);
+
+        return $this->workers->filter(
+            fn (WorkerProcess $w) => $w->spawnedAt->greaterThan($since) && $w->isRunning() && ! $w->isTerminating()
+        )->count();
+    }
+
+    /**
      * @return array<string, int>
      */
     public function queueCounts(): array

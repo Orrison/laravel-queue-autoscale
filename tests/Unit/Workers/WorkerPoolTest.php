@@ -213,3 +213,21 @@ test('terminatable workers exclude workers already shutting down', function () {
     expect($terminatable)->toHaveCount(1)
         ->and($terminatable->first())->toBe($active);
 });
+
+test('settlingCount counts running workers spawned within the window', function () {
+    $process = fn (int $pid, bool $running = true) => tap(Mockery::mock(Process::class), function ($mock) use ($pid, $running): void {
+        $mock->shouldReceive('getPid')->andReturn($pid);
+        $mock->shouldReceive('isRunning')->andReturn($running);
+    });
+
+    $this->pool->add(new WorkerProcess($process(1), 'redis', 'default', Carbon::now()->subSeconds(5)));
+    $this->pool->add(new WorkerProcess($process(2), 'redis', 'default', Carbon::now()->subSeconds(60)));
+    $this->pool->add(new WorkerProcess($process(3, running: false), 'redis', 'default', Carbon::now()));
+
+    $terminating = new WorkerProcess($process(4), 'redis', 'default', Carbon::now());
+    $terminating->markTerminationRequested(Carbon::now(), 30);
+    $this->pool->add($terminating);
+
+    expect($this->pool->settlingCount(30))->toBe(1)
+        ->and($this->pool->settlingCount(0))->toBe(0);
+});
