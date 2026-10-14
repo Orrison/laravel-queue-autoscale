@@ -5,6 +5,34 @@ All notable changes to `laravel-queue-autoscale` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v4.5.0 - 2026-10-14
+
+### Fixed
+
+- **SLA breach events fire on Amazon SQS.** `SlaBreached`, `SlaRecovered`, the console's breached/warning status and the cluster leader's breach state were decided from the oldest job's age, which SQS always reports as 0. On SQS a queue could therefore never enter breach, however far over its SLA it ran. They are now decided from the same SLA signal the strategy scales on: the `sla.percentile` of pickup times over `sla.window_seconds`, or the oldest job's age when there are fewer than `sla.min_samples` samples. The signal is measured once per tick, and the queue, group, pinned and cluster-leader paths share one implementation.
+
+### Changed
+
+- On any driver, a queue with at least `sla.min_samples` pickups is now judged on its pickup percentile, matching what the strategy scales on. Recovery follows the window, so it can trail the backlog clearing by up to `sla.window_seconds`. While a breach is open, it is held rather than recovered if the window runs short of samples and jobs are still pending, which is what a stalled SQS queue looks like.
+
+### Added
+
+- `SlaSignal`, `SlaSignalSource` and `SlaSignalResolver`; the opt-in `Contracts\SlaSignalStrategy` interface for custom strategies; `ScalingDecision::$slaSignal`; `ScalingEngine::assessDemand()` and `measureSlaSignal()`.
+- `SlaBreached` and `SlaRecovered` take an optional `slaSignal` and gain `signalSeconds()`. Their integer age fields still carry the raw oldest-job age. Telemetry events carry `sla_signal_seconds` and `sla_signal_source`.
+- Cluster summary workloads carry `sla_signal_seconds`, `sla_signal_source` and `sla_status`. `clusterMetrics()` exports `queue_autoscale_workload_sla_signal_seconds` and `queue_autoscale_workload_sla_breaching`, and falls back to oldest age for summaries from older leaders.
+- Testing: `fakePickupTimes()`, `slaSignalFor()`, `assertBreachesSla()` / `assertWithinSla()`, `InMemoryPickupTimeStore` and `QueueMetricsFactory::onSqs()`.
+
+### Documentation
+
+Docs and tests now fully cover v4.4: new **Amazon SQS** and **Kubernetes & ECS** deployment guides, a rewritten memory section in the resource-constraints algorithm (with worked examples), every `$details` key documented, `WorkerExited` field tables and exit-code guidance, a "How breach is decided" section, and a 4.3 → 4.4 → 4.5 upgrade guide. The docs also now say plainly that `queue:work`'s 128 MB `--memory` default applies to spawned workers.
+
+### Upgrading
+
+- `ScalingStrategyContract` is unchanged. A custom strategy that doesn't implement `SlaSignalStrategy` is judged on the oldest job's age, as before. Every new parameter is optional and trailing.
+- On Redis and database queues with enough pickup samples, breach and recovery now follow p95 pickup time instead of oldest age, so the timing of `SlaBreached`/`SlaRecovered` can shift. See the upgrade guide.
+- Mixed-version clusters keep working: an older leader's summary is read with oldest-age semantics.
+- Restart every `queue:autoscale` after upgrading.
+
 ## v4.4.1 - 2026-10-14
 
 ### Fixed
@@ -632,6 +660,7 @@ treat it as a list of queues
 
 
 
+
 ```
 For a group the comma is now the separator and each member is validated on its
 own. An injected option inside a member is still caught.
@@ -1065,6 +1094,7 @@ The autoscale manager exits gracefully for a supervised restart when Laravel's n
   
   
   
+  
   ```
 - **`ResourceEstimate` value object** — Carries CPU/memory estimates with per-dimension source metadata (`measured`, `config`, `default`) and sample counts, enabling downstream consumers to inspect provenance.
 - **`EstimateSource` enum** — `Measured`, `Config`, `Default` — tracks where each dimension of a resource estimate originated.
@@ -1384,6 +1414,7 @@ composer require php-tui/php-tui --dev
 
 
 
+
 ```
 ### Usage
 
@@ -1396,6 +1427,7 @@ php artisan queue:autoscale:debug
 
 # Dispatch test jobs
 php artisan queue:autoscale:test --jobs=10 --queue=default
+
 
 
 
@@ -1441,6 +1473,7 @@ First stable release of Queue Autoscale for Laravel with intelligent, predictive
 
 ```bash
 composer require cboxdk/laravel-queue-autoscale
+
 
 
 
