@@ -133,3 +133,13 @@ test('a job with no pushedAt does not consume sampling budget', function (): voi
 
     expect($sampler->currentSampleRate())->toBe(1.0);
 });
+
+test('records an SQS job under the queue name, not the queue URL', function (): void {
+    // SqsJob::getQueue() is the full URL; the manager reads samples by name.
+    $recorded = [];
+    $recorder = recorderWith(recordingStore($recorded));
+
+    $recorder->handle(jobProcessing(microtime(true) - 1.0, queue: 'https://sqs.us-east-1.amazonaws.com/123456789012/emails'));
+
+    expect($recorded[0]['queue'])->toBe('emails');
+});

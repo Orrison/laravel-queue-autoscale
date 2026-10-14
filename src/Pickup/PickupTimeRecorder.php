@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cbox\LaravelQueueAutoscale\Pickup;
 
 use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
+use Cbox\LaravelQueueAutoscale\Support\QueueName;
 use Illuminate\Queue\Events\JobProcessing;
 
 class PickupTimeRecorder
@@ -23,7 +24,7 @@ class PickupTimeRecorder
             return;
         }
 
-        $queue = $event->job->getQueue() ?: 'default';
+        $queue = QueueName::normalize($event->connectionName, $event->job->getQueue() ?: 'default');
 
         // Sampled per queue, not per process: a group worker polls several at
         // once, and one shared counter let a busy queue set the probability
