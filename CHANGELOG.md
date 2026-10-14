@@ -5,6 +5,34 @@ All notable changes to `laravel-queue-autoscale` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v4.4.0 - 2026-10-14
+
+### Fixed
+
+- **SQS pickup times and fuse outcomes are recorded under the queue name.** Laravel's SQS driver gives workers the full queue URL as the job's queue, so pickup samples and failure-fuse outcomes were written under `https://sqs.<region>.amazonaws.com/<account>/<queue>` while the manager read them by name. On SQS the hybrid strategy never got its p95 pickup signal, the fuse could never trip, and `excluded` patterns never matched. Queue URLs are now reduced to the queue name, with the connection's `suffix` removed the way the SQS driver adds it (before `.fifo`). URLs on hosts with an underscore, such as a Docker Compose LocalStack service, are recognised too. (#75)
+- **Pickup time excludes dispatch delays and retries.** A delayed job is measured from when it became available (Laravel 12.11+ writes the delay into the payload), only a job's first attempt is sampled, and samples above `pickup_time.max_sample_seconds` (default 3600) are dropped, which covers jobs re-pushed with `queue:retry`. (#76)
+- **Workloads on connections no worker can pop from are not discovered.** Queues on `sync`, `null`, `deferred` and `background` connections are skipped, in the manager and in `queue:autoscale:doctor`. (#78)
+- **Memory capacity is sized from one scope at a time.** `max_memory_percent` applies to the most specific limit that governs the host: `limits.memory_limit_mb` (new, for a parent-cgroup limit the process cannot see, such as a Kubernetes pod limit), else the container's cgroup limit, else the host. Every other scope still caps the result at what it has free. Workers that are still booting are charged the memory they have not reached yet, for `limits.worker_settle_seconds`, so a batch spawned in one cycle no longer reads as free memory in the next. (#79)
+- **Capacity is held after the kernel OOM-kills processes.** When the cgroup's OOM kill counter rises, the host's worker count is held at its current total for `limits.oom_backoff_seconds` (default 300, `0` disables) instead of refilling the memory the kill just freed. It has no effect where the counter is unavailable (outside Linux cgroup v2). (#80)
+- **Per-worker memory is floored at what live workers actually peak at.** The estimate can no longer sit below the measured peak RSS of the queue's running workers, boot included. Below 10 workers the floor is the median, so one outlier worker can't set it for a small queue. (#81)
+- **Shutdown can't be aborted by a throwing listener or log handler.** Reporting during shutdown now runs host code (`WorkerExited` listeners, log channels, the console renderer). A throwing listener used to escape before the SIGKILL step and leave workers that ignore SIGTERM running with no manager. Those steps are now caught and logged, and shutdown always finishes.
+
+### Added
+
+- **`WorkerExited` event and exit logging.** Every worker exit is logged with its exit code, terminating signal, uptime and whether it was requested. Planned stops log at `info` and unexpected exits at `warning`. Worker output keeps being forwarded during shutdown. (#77)
+- **`pickup_time.stamp_pushed_at`** (`QUEUE_AUTOSCALE_STAMP_PUSHED_AT`, default off) stamps `pushedAt` on every dispatched job, so apps without Horizon get pickup-time samples. It is safe because this release requires laravel-queue-metrics v3.4.1, which measures job duration from processing start. (#76)
+- **Doctor warning** when `pickup_time.max_sample_seconds` is at or below a queue's SLA target, because a breach would then always be dropped as an outlier.
+- New `CapacityCalculationResult::$details` keys: `used_memory_mb`, `headroom_mb`, `memory_scope`, `memory_capped_by`, `settling_workers`, `oom_backoff_ceiling`, `oom_backoff_until`. Existing keys are unchanged, but `total_memory_mb` and `current_memory_percent` now describe the chosen scope's limit. `memoryBreakdown()` exposes the same fields as typed properties.
+
+### Upgrading
+
+- Requires `cboxdk/laravel-queue-metrics` ^3.4.1. That release records SQS jobs under the queue name and measures job duration from processing start, so the average job time feeding worker targets is real processing time.
+- Running in Kubernetes or ECS with a pod- or task-level memory limit only? Set `QUEUE_AUTOSCALE_MEMORY_LIMIT_MB`, because the container cannot see that limit itself.
+- If you published the config, the new keys fall back to their defaults. Copy them in only if you want to change them.
+- Restart every `queue:autoscale` after upgrading.
+
+Thanks to @Orrison for #75–#81.
+
 ## v4.3.3 - 2026-09-24
 
 ### Fixed
@@ -590,6 +618,7 @@ treat it as a list of queues
 
 
 
+
 ```
 For a group the comma is now the separator and each member is validated on its
 own. An injected option inside a member is still caught.
@@ -1021,6 +1050,7 @@ The autoscale manager exits gracefully for a supervised restart when Laravel's n
   
   
   
+  
   ```
 - **`ResourceEstimate` value object** — Carries CPU/memory estimates with per-dimension source metadata (`measured`, `config`, `default`) and sample counts, enabling downstream consumers to inspect provenance.
 - **`EstimateSource` enum** — `Measured`, `Config`, `Default` — tracks where each dimension of a resource estimate originated.
@@ -1338,6 +1368,7 @@ composer require php-tui/php-tui --dev
 
 
 
+
 ```
 ### Usage
 
@@ -1350,6 +1381,7 @@ php artisan queue:autoscale:debug
 
 # Dispatch test jobs
 php artisan queue:autoscale:test --jobs=10 --queue=default
+
 
 
 
@@ -1393,6 +1425,7 @@ First stable release of Queue Autoscale for Laravel with intelligent, predictive
 
 ```bash
 composer require cboxdk/laravel-queue-autoscale
+
 
 
 
