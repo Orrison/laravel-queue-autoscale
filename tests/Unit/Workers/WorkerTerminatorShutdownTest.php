@@ -95,3 +95,54 @@ test('skips workers that already exited', function (): void {
 
     expect($this->terminator->terminateAll([new WorkerProcess($process, 'redis', 'default', now())]))->toBe(0);
 });
+
+test('calls back while waiting, so the caller can keep draining worker output', function (): void {
+    config()->set('queue-autoscale.queues.default', ['workers' => ['shutdown_timeout_seconds' => 5]]);
+
+    // Exits about 1.5s after SIGTERM, like a worker finishing its current job.
+    $process = new Process([
+        PHP_BINARY, '-r',
+        '$stop = false; pcntl_async_signals(true); pcntl_signal(SIGTERM, function () use (&$stop) { $stop = true; }); echo "ready\n"; while (! $stop) { usleep(20000); } usleep(1500000);',
+    ]);
+    $process->start();
+
+    $deadline = microtime(true) + 5.0;
+    while ($process->getIncrementalOutput() === '' && microtime(true) < $deadline) {
+        usleep(20_000);
+    }
+
+    $calls = 0;
+    $forced = $this->terminator->terminateAll(
+        [new WorkerProcess($process, 'redis', 'default', now())],
+        whileWaiting: function () use (&$calls): void {
+            $calls++;
+        },
+    );
+
+    // Throttled to about once a second, not once per 100ms poll.
+    expect($forced)->toBe(0)
+        ->and($calls)->toBeGreaterThanOrEqual(1)->toBeLessThanOrEqual(2);
+})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'requires pcntl and posix');
+
+test('marks signalled workers as asked to stop', function (): void {
+    $process = new Process([PHP_BINARY, '-r', 'echo "ready\n"; sleep(10);']);
+    $process->start();
+
+    $deadline = microtime(true) + 5.0;
+    while ($process->getIncrementalOutput() === '' && microtime(true) < $deadline) {
+        usleep(20_000);
+    }
+
+    $worker = new WorkerProcess($process, 'redis', 'default', now());
+    $this->terminator->terminateAll([$worker]);
+
+    expect($worker->isTerminating())->toBeTrue();
+})->skip(! extension_loaded('posix'), 'requires posix');
+
+test('waits for force-killed workers to be reaped before returning', function (): void {
+    $worker = stubbornWorker();
+
+    $this->terminator->terminateAll([$worker]);
+
+    expect($worker->isRunning())->toBeFalse();
+})->skip(! extension_loaded('pcntl') || ! extension_loaded('posix'), 'requires pcntl and posix');

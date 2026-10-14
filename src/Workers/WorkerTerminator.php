@@ -29,9 +29,10 @@ readonly class WorkerTerminator
      *
      * @param  iterable<WorkerProcess>  $workers
      * @param  (callable(WorkerProcess): void)|null  $onTerminate  Invoked per worker as it is signalled.
+     * @param  (callable(): void)|null  $whileWaiting  Invoked about once a second while waiting for workers to stop.
      * @return int Workers that had to be force-killed.
      */
-    public function terminateAll(iterable $workers, ?callable $onTerminate = null): int
+    public function terminateAll(iterable $workers, ?callable $onTerminate = null, ?callable $whileWaiting = null): int
     {
         // One deadline covers the whole pool, so it has to be the longest
         // window any worker in it asked for — a shared deadline set to the
@@ -42,7 +43,8 @@ readonly class WorkerTerminator
         $pending = [];
 
         foreach ($workers as $worker) {
-            $timeout = max($timeout, $this->shutdownTimeoutFor($worker));
+            $workerTimeout = $this->shutdownTimeoutFor($worker);
+            $timeout = max($timeout, $workerTimeout);
 
             if ($onTerminate !== null) {
                 $onTerminate($worker);
@@ -55,6 +57,7 @@ readonly class WorkerTerminator
             }
 
             if (posix_kill($pid, SIGTERM)) {
+                $worker->markTerminationRequested(now(), $workerTimeout);
                 $pending[$pid] = $worker;
 
                 continue;
@@ -67,12 +70,18 @@ readonly class WorkerTerminator
         }
 
         $deadline = time() + max($timeout, 1);
+        $lastWaitCallback = microtime(true);
 
         while ($pending !== [] && time() < $deadline) {
             foreach ($pending as $pid => $worker) {
                 if (! $worker->isRunning()) {
                     unset($pending[$pid]);
                 }
+            }
+
+            if ($whileWaiting !== null && microtime(true) - $lastWaitCallback >= 1.0) {
+                $whileWaiting();
+                $lastWaitCallback = microtime(true);
             }
 
             if ($pending !== []) {
@@ -87,6 +96,13 @@ readonly class WorkerTerminator
             );
 
             posix_kill($pid, SIGKILL);
+        }
+
+        // Let the killed workers be reaped, so the caller can read how they exited.
+        $reapDeadline = microtime(true) + 1.0;
+
+        while (microtime(true) < $reapDeadline && array_filter($pending, static fn (WorkerProcess $worker): bool => $worker->isRunning()) !== []) {
+            usleep(20_000);
         }
 
         return count($pending);

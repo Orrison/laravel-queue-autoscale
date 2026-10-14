@@ -15,6 +15,7 @@ All live in `Cbox\LaravelQueueAutoscale\Events`. See [Event Handling](../basic-u
 | `SlaBreached` | Once per state transition | `$connection`, `$queue`, `$oldestJobAge`, `$slaTarget`, `$pending`, `$activeWorkers` |
 | `SlaRecovered` | Once per state transition | `$connection`, `$queue`, `$currentJobAge`, `$slaTarget`, `$pending`, `$activeWorkers` |
 | `WorkersScaled` | Per spawn/terminate action | `$connection`, `$queue`, `$from`, `$to`, `$action`, `$reason` |
+| `WorkerExited` | When the manager finds a worker process has ended, including during shutdown | `$connection`, `$queue`, `$group`, `$pid`, `$exitCode`, `$termSignal`, `$terminationRequested`, `$uptimeSeconds`, `$graceful` |
 | `ClusterScalingSignalUpdated` | When the leader publishes a new host scaling signal | `$clusterId`, `$leaderId`, `$currentHosts`, `$recommendedHosts`, `$currentCapacity`, `$requiredWorkers`, `$action`, `$reason` |
 | `AutoscaleManagerStarted` | When a manager process starts | `$managerId`, `$host`, `$clusterEnabled`, `$clusterId`, `$intervalSeconds`, `$startedAt`, `$packageVersion` |
 | `AutoscaleManagerStopped` | When a manager process stops | `$managerId`, `$host`, `$clusterEnabled`, `$clusterId`, `$startedAt`, `$stoppedAt`, `$reason`, `$workerCount`, `$packageVersion` |

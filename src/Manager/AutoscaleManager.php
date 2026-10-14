@@ -2121,6 +2121,12 @@ class AutoscaleManager
         }
     }
 
+    private function collectExitedWorkers(): void
+    {
+        $this->processWorkerOutput();
+        $this->scaler->cleanupDeadWorkers();
+    }
+
     private function renderOutput(): void
     {
         if ($this->renderer === null) {
@@ -2168,9 +2174,18 @@ class AutoscaleManager
             'Shutting down autoscale manager, terminating all workers'
         );
 
-        $this->terminator->terminateAll($this->pool->all(), function (WorkerProcess $worker): void {
-            $this->verbose("   ✓ Terminating worker: PID {$worker->pid()}", 'info');
-        });
+        // Workers finish their current job after SIGTERM, which can take as long
+        // as the shutdown deadline; keep forwarding their output and reporting
+        // their exits meanwhile, as the run loop does.
+        $this->terminator->terminateAll(
+            $this->pool->all(),
+            function (WorkerProcess $worker): void {
+                $this->verbose("   ✓ Terminating worker: PID {$worker->pid()}", 'info');
+            },
+            fn () => $this->collectExitedWorkers(),
+        );
+
+        $this->collectExitedWorkers();
 
         $this->leaveCluster();
 

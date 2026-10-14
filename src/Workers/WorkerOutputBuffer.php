@@ -45,8 +45,13 @@ class WorkerOutputBuffer
                 continue;
             }
 
+            $exited = ! $worker->isRunning();
             $lines = $this->drain($pid, $worker->getIncrementalOutput(), $this->buffers);
             $worker->clearOutput();
+
+            if ($exited) {
+                $lines = [...$lines, ...$this->flushPartial($pid, $this->buffers)];
+            }
 
             if ($lines !== []) {
                 $output[$pid] = $lines;
@@ -80,8 +85,13 @@ class WorkerOutputBuffer
                 continue;
             }
 
+            $exited = ! $worker->isRunning();
             $lines = $this->drain($pid, $worker->getIncrementalErrorOutput(), $this->errorBuffers);
             $worker->clearErrorOutput();
+
+            if ($exited) {
+                $lines = [...$lines, ...$this->flushPartial($pid, $this->errorBuffers)];
+            }
 
             if ($lines !== []) {
                 $output[$pid] = $lines;
@@ -140,6 +150,24 @@ class WorkerOutputBuffer
         $lines = array_filter($lines, fn (string $line) => trim($line) !== '');
 
         return array_values($lines);
+    }
+
+    /**
+     * Release the held partial line of a worker that has exited. It will write
+     * nothing more, so the fragment is its last line, not half of one.
+     *
+     * Liveness is read before the stream, so anything written between the two
+     * reads is held and flushed on the next pass rather than cut short.
+     *
+     * @param  array<int, string>  $buffers
+     * @return list<string>
+     */
+    private function flushPartial(int $pid, array &$buffers): array
+    {
+        $partial = $buffers[$pid] ?? '';
+        unset($buffers[$pid]);
+
+        return trim($partial) === '' ? [] : [$partial];
     }
 
     public function clearBuffer(int $pid): void
