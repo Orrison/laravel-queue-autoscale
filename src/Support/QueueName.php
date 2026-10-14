@@ -33,10 +33,18 @@ class QueueName
         return self::withoutSuffix($name, config("queue.connections.{$connection}.suffix"));
     }
 
+    /**
+     * An http(s) scheme prefix, compared case-insensitively, is enough.
+     *
+     * FILTER_VALIDATE_URL is stricter than SQS endpoints in practice: it
+     * rejects host names with underscores, which Docker Compose service names
+     * routinely have (`http://local_stack:4566/000000000000/emails`), so a
+     * LocalStack queue URL was never reduced to its name. Queue names do not
+     * start with a scheme, and parse_url() still has to find a path below.
+     */
     private static function isUrl(string $queue): bool
     {
-        return (str_starts_with($queue, 'https://') || str_starts_with($queue, 'http://'))
-            && filter_var($queue, FILTER_VALIDATE_URL) !== false;
+        return str_starts_with(strtolower($queue), 'https://') || str_starts_with(strtolower($queue), 'http://');
     }
 
     /**
