@@ -170,6 +170,7 @@ return [
          * delay) on a job's first attempt. A job re-pushed with `queue:retry`
          * keeps its original `pushedAt`, so its sample would count hours or
          * days of waiting that never happened. Samples above this are dropped.
+         * Keep it well above every SLA target, or breaches are dropped too.
          * Set to null to keep every sample.
          */
         'max_sample_seconds' => env('QUEUE_AUTOSCALE_PICKUP_MAX_SAMPLE_SECONDS', 3600),

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cbox\LaravelQueueAutoscale\Diagnostics;
 
 use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
+use Cbox\LaravelQueueAutoscale\Configuration\InvalidConfigurationException;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfigResolver;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 
@@ -43,6 +44,7 @@ class ConfigurationDoctor
                 $this->leaderLeaseTooShortToSurviveASlowCycle(),
                 $this->discoveryWithoutACeiling($discoveredQueues),
                 $this->fifoQueuesAllowingParallelism($discoveredQueues),
+                $this->pickupCapHidingSlaBreaches($discoveredQueues),
                 $this->configurationLeftOverFromV3(),
             ] as $group
         ) {
@@ -328,6 +330,59 @@ class ConfigurationDoctor
         }
 
         return $findings;
+    }
+
+    /**
+     * A pickup sample cap at or below a queue's SLA target.
+     *
+     * `pickup_time.max_sample_seconds` drops samples above it, so stale
+     * `queue:retry` re-pushes do not count days of waiting that never happened.
+     * But a breach is a sample above the SLA target: with the cap at or below
+     * the target every breaching sample is dropped, the measured percentile
+     * can never exceed the target, and the queue reads as healthy however long
+     * jobs actually wait. The recorder runs inside every worker on every job,
+     * so the cap is checked here rather than resolved per queue on that path.
+     *
+     * @param  list<string>  $discoveredQueues
+     * @return list<Finding>
+     */
+    private function pickupCapHidingSlaBreaches(array $discoveredQueues): array
+    {
+        $cap = AutoscaleConfiguration::pickupMaxSampleSeconds();
+
+        if ($cap === null) {
+            return [];
+        }
+
+        $hidden = [];
+
+        foreach ($discoveredQueues as $queue) {
+            try {
+                $target = QueueConfiguration::fromConfig($this->defaultConnection(), $queue)->sla->targetSeconds;
+            } catch (InvalidConfigurationException) {
+                // An invalid queue configuration is reported when it loads;
+                // it has no SLA target to compare against here.
+                continue;
+            }
+
+            if ($cap <= $target) {
+                $hidden[] = "'{$queue}' ({$target}s)";
+            }
+        }
+
+        if ($hidden === []) {
+            return [];
+        }
+
+        $capSeconds = (int) round($cap);
+
+        return [Finding::warning(
+            'The pickup sample cap hides SLA breaches',
+            "pickup_time.max_sample_seconds is {$capSeconds}s, at or below the SLA target of "
+            .implode(', ', $hidden).'. Samples above the cap are dropped, so a breach is never measured.',
+            'Raise pickup_time.max_sample_seconds well above the largest SLA target (several times it), '
+            .'or set it to null to keep every sample.',
+        )];
     }
 
     /**

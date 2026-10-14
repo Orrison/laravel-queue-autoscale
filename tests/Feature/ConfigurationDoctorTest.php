@@ -301,3 +301,29 @@ test('a long evaluation interval outgrows a default lease', function (): void {
 
     expect(findingTitled(diagnose(['default']), 'leader lease'))->not->toBeNull();
 });
+
+test('a pickup sample cap at or below an SLA target is reported', function (): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', 3600);
+    config()->set('queue-autoscale.queues', [
+        'reports' => ['sla' => ['target_seconds' => 3600], 'workers' => ['timeout_seconds' => 600]],
+        'emails' => ['sla' => ['target_seconds' => 30]],
+        'broken' => ['sla' => ['target_seconds' => 7200], 'workers' => ['timeout_seconds' => 900, 'max_time_seconds' => 100]],
+    ]);
+
+    // 'broken' cannot load (its timeout outlives the worker), so it
+    // is skipped rather than aborting the doctor.
+    $finding = findingTitled(diagnose(['reports', 'emails', 'broken']), 'pickup sample cap');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->severity)->toBe(Severity::Warning)
+        ->and($finding->detail)->toContain("'reports' (3600s)")
+        ->and($finding->detail)->not->toContain("'emails'")
+        ->and($finding->detail)->not->toContain("'broken'");
+});
+
+test('a pickup sample cap above every SLA target, or no cap, is not reported', function (?int $cap): void {
+    config()->set('queue-autoscale.pickup_time.max_sample_seconds', $cap);
+    config()->set('queue-autoscale.queues', ['reports' => ['sla' => ['target_seconds' => 3599]]]);
+
+    expect(findingTitled(diagnose(['reports']), 'pickup sample cap'))->toBeNull();
+})->with(['cap above the target' => [3600], 'no cap' => [null]]);
