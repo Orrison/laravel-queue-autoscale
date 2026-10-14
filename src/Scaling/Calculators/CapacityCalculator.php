@@ -33,6 +33,8 @@ class CapacityCalculator
      */
     private ?CpuSnapshot $previousCpuSnapshot = null;
 
+    private ?OomBackoff $oomBackoff = null;
+
     /**
      * How long cached metrics remain valid (seconds).
      * Should be shorter than the evaluation interval to ensure fresh data each tick.
@@ -113,6 +115,14 @@ class CapacityCalculator
             default => LimitingFactor::Balanced,
         };
 
+        $oomCeiling = $this->oomBackoff()->ceiling($currentWorkers);
+
+        if ($oomCeiling !== null && $oomCeiling < $finalMaxWorkers) {
+            $finalMaxWorkers = $oomCeiling;
+            $maxWorkersByMemory = min($maxWorkersByMemory, $oomCeiling);
+            $limitingFactor = LimitingFactor::Memory;
+        }
+
         // Build detailed explanation
         $details = [
             'cpu_explanation' => sprintf(
@@ -143,6 +153,8 @@ class CapacityCalculator
                 'total_memory_mb' => $totalMemoryMb,
                 'worker_memory_mb' => $workerMemoryMb,
                 'memory_estimate_source' => $estimate->memorySource->value,
+                'oom_backoff_ceiling' => $oomCeiling,
+                'oom_backoff_until' => $this->oomBackoff()->holdUntil()?->toIso8601String(),
             ],
         ];
 
@@ -246,6 +258,14 @@ class CapacityCalculator
             ? $memoryResult->getValue()->usedPercentage()
             : 50.0;
 
+        $containerResult = SystemMetrics::container();
+        $this->oomBackoff()->observe($containerResult->isSuccess() ? $containerResult->getValue()->oomKillCount : null);
+
         $this->cacheTimestamp = microtime(true);
+    }
+
+    private function oomBackoff(): OomBackoff
+    {
+        return $this->oomBackoff ??= new OomBackoff;
     }
 }

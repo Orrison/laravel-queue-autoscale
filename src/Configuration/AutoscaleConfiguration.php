@@ -393,6 +393,11 @@ readonly class AutoscaleConfiguration
         return self::intConfig('queue-autoscale.limits.worker_memory_mb_estimate', 128);
     }
 
+    public static function oomBackoffSeconds(): int
+    {
+        return max(self::intConfig('queue-autoscale.limits.oom_backoff_seconds', 300), 0);
+    }
+
     public static function workerCpuCoreEstimate(): float
     {
         return self::floatConfig('queue-autoscale.limits.worker_cpu_core_estimate', 0.2);
