@@ -549,7 +549,7 @@ A pickup sample is the time between a job becoming available and a worker starti
 
 Horizon writes `pushedAt`; plain Laravel does not. Without it there are no pickup samples and the strategy falls back to the oldest job's age, which some drivers (SQS among them) cannot report. Set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true` to stamp it on every dispatched job. Under Horizon the stamp is harmless: Horizon writes its own `pushedAt` when it pushes the job, overwriting the stamp with a timestamp from the same moment, so samples are the same either way.
 
-Only enable stamping with the `cboxdk/laravel-queue-metrics` release after v3.4.0, which measures job duration from when processing starts. v3.4.0 and earlier measure it from `pushedAt` when one is present, so stamping it would count every job's queue wait as job time and inflate the duration the scaling maths relies on.
+Stamping is safe because this package requires `cboxdk/laravel-queue-metrics` v3.4.1 or later, which measures job duration from when processing starts. v3.4.0 and earlier measured it from `pushedAt` when one was present, so stamping would have counted every job's queue wait as job time and inflated the duration the scaling maths relies on.
 
 ## Configuration Patterns
 

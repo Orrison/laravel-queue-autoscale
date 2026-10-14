@@ -16,7 +16,7 @@ same commit.
 - php — `^8.4|^8.5`
 - ext-pcntl, ext-posix (the manager forks and signals worker processes)
 - ext-mbstring (character-boundary truncation of worker output)
-- cboxdk/laravel-queue-metrics — `^3.4`
+- cboxdk/laravel-queue-metrics — `^3.4.1`
 - illuminate/contracts — `^12.0||^13.0`
 - symfony/process — `^7.0||^8.0`
 
@@ -26,7 +26,7 @@ same commit.
 - pestphp/pest — `^4.4.1` (plus `pest-plugin-arch`, `pest-plugin-laravel`)
 - larastan/larastan — `^3.0`
 - laravel/pint — `^1.14`
-- cboxdk/laravel-telemetry — `^1.2.0` (dev + `suggest` only, never a hard dependency)
+- cboxdk/laravel-telemetry — `^3.3.0` (dev + `suggest` only, never a hard dependency)
 - aws/aws-sdk-php — `^3.390` (dev only, for the SQS integration specs)
 
 ### Laravel version support

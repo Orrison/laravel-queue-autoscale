@@ -180,10 +180,9 @@ return [
          * writes. Enable this to stamp it on every dispatched job (Horizon
          * overwrites the stamp with its own, from the same moment).
          *
-         * laravel-queue-metrics v3.4.0 and earlier measure job duration from
-         * `pushedAt`, so they would then record queue wait as part of every
-         * job's duration. Only enable this with the release after v3.4.0,
-         * which measures it from processing start.
+         * Safe with laravel-queue-metrics v3.4.1+ (required by this package),
+         * which measures job duration from processing start rather than from
+         * `pushedAt`.
          */
         'stamp_pushed_at' => env('QUEUE_AUTOSCALE_STAMP_PUSHED_AT', false),
     ],
