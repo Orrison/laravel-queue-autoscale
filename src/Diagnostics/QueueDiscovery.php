@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cbox\LaravelQueueAutoscale\Diagnostics;
 
+use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfigResolver;
 use Cbox\LaravelQueueMetrics\Facades\QueueMetrics;
 
@@ -34,6 +35,15 @@ class QueueDiscovery
         $names = [];
 
         foreach ($this->fromMetrics() as $key => $entry) {
+            // Jobs run synchronously still fire the queue events, so the
+            // metrics layer reports queues on connections no worker can pop
+            // from. The manager never supervises those; neither does this.
+            $connection = $entry['connection'] ?? (str_contains($key, ':') ? strstr($key, ':', true) : null);
+
+            if (is_string($connection) && ! AutoscaleConfiguration::connectionCanBeWorked($connection)) {
+                continue;
+            }
+
             // Entries are keyed "connection:queue" and carry the name in the
             // payload too. The payload wins because a queue name may itself
             // contain a colon, which makes splitting the key ambiguous.
