@@ -480,7 +480,8 @@ That exception is gone as a mechanism, because a scale-up no longer needs one.
 The two time limits are separate settings and mean different things:
 `workers.max_time_seconds` becomes `--max-time`, the worker process's lifetime before it is recycled;
 `workers.timeout_seconds` becomes `--timeout`, how long a single job may run. Configuration rejects a
-job timeout that is not shorter than the process lifetime. No `--memory` flag is passed.
+job timeout that is not shorter than the process lifetime. No `--memory` flag is passed, so
+`queue:work`'s default of 128 MB applies: a worker past it exits (code 12) after its current job.
 
 Environment injected into the child: `LARAVEL_AUTOSCALE_WORKER=true`, `AUTOSCALE_MANAGER_ID`, and
 `AUTOSCALE_WORKER_GROUP` for group workers. Group workers get a comma-separated

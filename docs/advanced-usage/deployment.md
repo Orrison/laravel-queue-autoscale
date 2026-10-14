@@ -407,9 +407,11 @@ Those six flags are the complete list. In particular:
   `--timeout` and bounds how long a *single job* may run (default `900`). Configuration refuses a job
   timeout that is not shorter than the process lifetime, since a job that outlives its worker can
   never finish.
-- **There is no memory flag.** The spawner never passes `--memory`. Worker memory is bounded by
-  PHP's own `memory_limit` and by the manager's `limits.max_memory_percent` ceiling, which stops new
-  workers being spawned rather than stopping existing ones.
+- **There is no memory flag.** The spawner never passes `--memory`, so `queue:work`'s own default
+  of 128 MB applies: once a worker's PHP memory usage passes 128 MB it exits with code `12` after its
+  current job and is replaced on a later cycle. PHP's `memory_limit` is a separate, hard limit that
+  fails the job instead. The manager's `limits.max_memory_percent` ceiling stops new workers being
+  spawned rather than stopping existing ones.
 
 Group workers run the same command with a comma-separated queue list
 (`--queue=high,medium,low`), which gives Laravel's strict left-to-right priority.

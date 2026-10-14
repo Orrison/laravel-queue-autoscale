@@ -170,7 +170,7 @@ Per-worker runtime knobs live under the `workers` key of a queue config:
 ],
 ```
 
-`max_time_seconds` becomes `--max-time`, the worker process's total lifetime before it exits and is respawned; `timeout_seconds` becomes `--timeout`, how long one job may run. The spawner passes no `--memory` flag — set that in `php.ini` if you need it.
+`max_time_seconds` becomes `--max-time`, the worker process's total lifetime before it exits and is respawned; `timeout_seconds` becomes `--timeout`, how long one job may run. The spawner passes no `--memory` flag, so `queue:work`'s default of 128 MB applies: a worker whose PHP memory usage passes it exits (code `12`) after its current job and is replaced. That is a recycle, not a failure; PHP's `memory_limit` in `php.ini` is the hard limit that fails a job.
 
 **Tuning `max_time_seconds`** (how long a worker process is kept alive before recycling). Look at recent job durations in your metrics store and set it comfortably above the longest job a worker might be part-way through when it recycles.
 

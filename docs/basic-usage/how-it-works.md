@@ -360,7 +360,8 @@ If you create a custom profile with both a tight SLA (< 10s) and `workers.min = 
 Every value comes from the queue's own profile; there is no global `workers` block. The two time
 limits are separate settings: `max_time_seconds` becomes `--max-time` and recycles the worker
 process, `timeout_seconds` becomes `--timeout` and bounds a single job. The spawner passes no
-`--memory` flag.
+`--memory` flag, so `queue:work`'s default of 128 MB applies: a worker past it exits after its
+current job and is replaced.
 
 Three environment variables are injected into each worker, and nothing else:
 

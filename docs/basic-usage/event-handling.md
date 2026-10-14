@@ -208,7 +208,7 @@ class WorkerExited
 | `$uptimeSeconds` | Seconds from spawn until the manager noticed the exit |
 | `$graceful` | `true` when `queue:work` stopped itself cleanly: no terminating signal, and exit code `0` or `12` |
 
-`queue:work` exits `0` when it stops on request, at `--max-time`, on a restart signal or when its connection is lost, and `12` when it stops at its `--memory` limit. The autoscaler never passes `--memory`, so `12` appears only if your application sets that limit some other way. Any other exit is not graceful.
+`queue:work` exits `0` when it stops on request, at `--max-time`, on a restart signal or when its connection is lost, and `12` when it stops at its `--memory` limit. The autoscaler never passes `--memory`, so `queue:work`'s default of 128 MB applies: a worker whose PHP memory usage passes it exits with `12` after its current job, and is replaced if the queue still needs it. Any other exit is not graceful.
 
 How common exits read:
 
@@ -216,6 +216,7 @@ How common exits read:
 |---|---|---|---|---|
 | Scale-down: the manager sent SIGTERM and the worker finished its job | `0` | `null` | `true` | `true` |
 | The worker reached `workers.max_time_seconds` (`--max-time`) | `0` | `null` | `false` | `true` |
+| The worker passed `queue:work`'s `--memory` limit (128 MB by default) after a job | `12` | `null` | `false` | `true` |
 | A job ran past `workers.timeout_seconds`: `queue:work` SIGKILLs itself | `137` | `9` | `false` | `false` |
 | The kernel OOM-killed the worker | `137` | `9` | `false` | `false` |
 | The worker ignored SIGTERM past its shutdown timeout and the manager SIGKILLed it | `137` | `9` | `true` | `false` |

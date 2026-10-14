@@ -208,7 +208,9 @@ Spawns `queue:work` subprocesses. The command it builds is exactly:
     --sleep={workers.sleep_seconds}
 ```
 
-Every value comes from the queue's resolved `WorkerConfiguration`. `--memory` is never passed.
+Every value comes from the queue's resolved `WorkerConfiguration`. `--memory` is never passed, so
+`queue:work`'s own default of 128 MB applies: a worker whose PHP memory usage passes it exits with
+code `12` after its current job and is replaced.
 
 The only environment variables injected into a worker are:
 

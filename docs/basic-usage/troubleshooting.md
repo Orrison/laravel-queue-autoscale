@@ -69,7 +69,7 @@ The output names the limiting factor for every queue.
 |---|---|---|---|
 | `0` | `null` | `true` | Scale-down or shutdown: the manager sent SIGTERM and the worker finished its job. Normal |
 | `0` | `null` | `false` | The worker stopped itself: `--max-time` reached, `queue:restart`, or a lost connection. Normal unless `uptime_seconds` is tiny every time |
-| `12` | `null` | any | `queue:work` hit its `--memory` limit. The autoscaler never passes `--memory`, so something in your app sets it |
+| `12` | `null` | any | `queue:work` passed its `--memory` limit and stopped after its job. The autoscaler passes no `--memory`, so this is Laravel's default of 128 MB of PHP memory. Normal for memory-hungry jobs; frequent recycling is a sign of a leak |
 | `137` | `9` | `false` | SIGKILL the manager did not send: a job ran past `workers.timeout_seconds`, or the kernel's OOM killer |
 | `137` | `9` | `true` | The worker ignored SIGTERM past its `workers.shutdown_timeout_seconds` and the manager force-killed it |
 | `143` | `15` | any | The process died on SIGTERM instead of handling it, or something else sent SIGTERM |
@@ -91,7 +91,7 @@ A signal-killed process has no exit code of its own; Symfony Process reports `12
    ```
 
    The error will be immediate — almost always `.env` permissions, missing Redis connection, or a wrong PHP path.
-2. **PHP is running out of memory on each job.** Check `storage/logs/laravel.log` for `Allowed memory size` errors in the spawned workers (exit code `255`). The autoscaler never passes `--memory` to `queue:work`, so raise `memory_limit` in the php.ini the manager's PHP binary uses.
+2. **PHP is running out of memory on each job.** Check `storage/logs/laravel.log` for `Allowed memory size` errors in the spawned workers (exit code `255`). That is PHP's hard `memory_limit`, separate from `queue:work`'s `--memory` (which the autoscaler leaves at Laravel's default of 128 MB, and which only recycles the worker after a job). Raise `memory_limit` in the php.ini the manager's PHP binary uses.
 3. **A worker is hitting `workers.max_time_seconds`.** That value is passed as `--max-time`, so the worker process exits after that many seconds of life and is respawned. Default is 3600s. Expected behaviour unless you see it every few seconds. (A job exceeding `workers.timeout_seconds` is a different event — that kills the job, not the worker.)
 
 ## Workers keep spawning and terminating (flapping)
