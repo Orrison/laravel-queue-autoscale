@@ -42,6 +42,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\Calculators\LittlesLawCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\Forecasting\Policies\ModerateForecastPolicy;
 use Cbox\LaravelQueueAutoscale\Scaling\ResourceEstimateResolver;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingEngine;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalResolver;
 use Cbox\LaravelQueueAutoscale\Support\ManagerProcessLock;
 use Cbox\LaravelQueueAutoscale\Support\RestartSignal;
 use Cbox\LaravelQueueAutoscale\Telemetry\Contracts\ProvidesTelemetrySnapshot;
@@ -184,6 +185,10 @@ class LaravelQueueAutoscaleServiceProvider extends ServiceProvider
 
             return $app->make($strategyClass);
         });
+
+        // Bound so the engine's optional resolver is injected: the container
+        // hands an unbound optional dependency its default (null) instead.
+        $this->app->singleton(SlaSignalResolver::class);
 
         // Register scaling engine
         $this->app->singleton(ScalingEngine::class);

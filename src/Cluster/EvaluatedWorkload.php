@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cbox\LaravelQueueAutoscale\Cluster;
 
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
 
 /**
@@ -21,6 +22,8 @@ readonly class EvaluatedWorkload
     /**
      * @param  bool  $isGroup  A group polls several queues from one worker; a queue is its own workload.
      * @param  list<string>  $memberQueues  The queues this workload's workers actually poll.
+     * @param  SlaSignal|null  $slaSignal  The signal the strategy computed this workload's demand from.
+     *                                     Null falls back to the oldest job's age — see slaSignal().
      */
     public function __construct(
         public bool $isGroup,
@@ -31,6 +34,7 @@ readonly class EvaluatedWorkload
         public int $currentWorkers,
         public QueueMetricsData $metrics,
         public array $memberQueues,
+        public ?SlaSignal $slaSignal = null,
     ) {}
 
     /**
@@ -57,15 +61,28 @@ readonly class EvaluatedWorkload
     }
 
     /**
-     * Whether the oldest waiting job has already missed the SLA.
+     * The number this workload's SLA is judged on this cycle.
      *
-     * Guarded on a non-zero age because an empty queue reports zero, which
-     * would otherwise read as "infinitely late" against any target.
+     * The strategy's own signal when the leader was given one; otherwise the
+     * oldest job's age, which is how a workload built without a signal — by a
+     * consumer, or by code written before signals existed — was always judged.
+     */
+    public function slaSignal(): SlaSignal
+    {
+        return $this->slaSignal ?? SlaSignal::fromOldestJobAge($this->metrics->oldestJobAge);
+    }
+
+    /**
+     * Whether the workload's SLA signal is at or over the target.
+     *
+     * Guarded on a non-zero reading because an empty queue reports zero, which
+     * would otherwise read as "infinitely late" against any target. This is
+     * the instantaneous reading only; the leader additionally holds an open
+     * breach through an inconclusive reading — see SlaSignal::isInconclusive().
      */
     public function isBreaching(): bool
     {
-        return $this->metrics->oldestJobAge > 0
-            && $this->metrics->oldestJobAge >= $this->config->sla->targetSeconds;
+        return $this->slaSignal()->isBreaching($this->config->sla->targetSeconds);
     }
 
     /**

@@ -10,12 +10,15 @@ use Cbox\LaravelQueueAutoscale\Contracts\ForecasterContract;
 use Cbox\LaravelQueueAutoscale\Contracts\ForecastPolicyContract;
 use Cbox\LaravelQueueAutoscale\Contracts\PercentileCalculatorContract;
 use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
-use Cbox\LaravelQueueAutoscale\Contracts\ScalingStrategyContract;
+use Cbox\LaravelQueueAutoscale\Contracts\SlaSignalStrategy;
 use Cbox\LaravelQueueAutoscale\Contracts\SpawnLatencyTrackerContract;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\ArrivalRateEstimator;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\BacklogDrainCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\LittlesLawCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\TargetSmoother;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalResolver;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalSource;
 use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
 
 /**
@@ -25,12 +28,13 @@ use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
  * 1. Rate-Based (Little's Law): Workers needed for steady-state throughput
  * 2. Backlog-Based: Workers needed to drain queue before SLA breach
  * 3. Forecast-Blended Arrival Rate: Estimated true arrival rate with forecasting
- * 4. p95 Pickup Time Signal: Uses sliding-window percentile over actual pickup times
+ * 4. p95 Pickup Time Signal: Uses sliding-window percentile over actual pickup times,
+ *    reported through getLastSlaSignal() so breach state is judged on the same number
  * 5. Spawn-Compensated Effective SLA: Subtracts EMA spawn latency from SLA budget
  *
  * Takes the maximum of all algorithms to ensure SLA compliance.
  */
-class HybridStrategy implements ScalingStrategyContract
+class HybridStrategy implements SlaSignalStrategy
 {
     /**
      * @var array<string, float|int|string|null>
@@ -40,6 +44,8 @@ class HybridStrategy implements ScalingStrategyContract
     private bool $usedFallback = false;
 
     private string $arrivalRateSource = '';
+
+    private ?SlaSignal $lastSlaSignal = null;
 
     /**
      * Resolved forecaster/policy pairs, keyed by the configuration that
@@ -71,6 +77,7 @@ class HybridStrategy implements ScalingStrategyContract
         // Reset flags
         $this->usedFallback = false;
         $this->arrivalRateSource = '';
+        $this->lastSlaSignal = null;
 
         // Determine average job time
         [$avgJobTime, $jobTimeSource] = $this->determineJobTime($metrics);
@@ -144,32 +151,17 @@ class HybridStrategy implements ScalingStrategyContract
             : 0.0;
         $effectiveSla = max(1.0, (float) $config->sla->targetSeconds - $spawnLatency);
 
-        // Compute p95 pickup time signal from sliding window.
-        //
-        // For a per-queue config this reads samples from a single Redis list.
-        // For a group-adapted config (memberQueues populated) we aggregate across
-        // every real queue the group polls — otherwise p95 would always be null
-        // for groups, because PickupTimeRecorder stores samples keyed by the real
-        // queue name, not by group name.
-        $pickupTimes = [];
-
-        foreach ($config->sampleQueues() as $sampleQueue) {
-            $samples = $this->pickupStore->recentSamples(
-                $config->connection,
-                $sampleQueue,
-                $config->sla->windowSeconds,
-            );
-
-            foreach ($samples as $s) {
-                $pickupTimes[] = $s['pickup_seconds'];
-            }
-        }
-        $p95 = $this->percentileCalc->compute(
-            $pickupTimes,
-            $config->sla->percentile,
-            $config->sla->minSamples,
-        );
-        $slaSignal = $p95 ?? (float) $oldestJobAge;
+        // Compute the SLA signal: the configured pickup-time percentile over
+        // the sliding window, or the oldest job's age when the window holds
+        // too few samples. Measured by the same resolver that judges pinned
+        // workloads, and reported through getLastSlaSignal() so the manager
+        // decides breach from this number rather than measuring again.
+        $this->lastSlaSignal = (new SlaSignalResolver($this->pickupStore, $this->percentileCalc))
+            ->resolve($metrics, $config);
+        $p95 = $this->lastSlaSignal->source === SlaSignalSource::PickupPercentile
+            ? $this->lastSlaSignal->seconds
+            : null;
+        $slaSignal = $this->lastSlaSignal->seconds;
         $slaSignalSource = $p95 !== null ? 'p95' : 'oldest_age_fallback';
 
         // 1. RATE-BASED: Little's Law (L = λW)
@@ -399,6 +391,11 @@ class HybridStrategy implements ScalingStrategyContract
         }
 
         return implode('; ', $parts);
+    }
+
+    public function getLastSlaSignal(): ?SlaSignal
+    {
+        return $this->lastSlaSignal;
     }
 
     public function getLastPrediction(): ?float

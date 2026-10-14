@@ -1,10 +1,12 @@
 <?php
 
 use Cbox\LaravelQueueAutoscale\Cluster\CooldownDecision;
+use Cbox\LaravelQueueAutoscale\Scaling\DemandAssessment;
 use Cbox\LaravelQueueAutoscale\Scaling\DiscoveredWorkloads;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CpuBreakdown;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MeasuredResourceSample;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryBreakdown;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 
 arch('it will not use debugging functions')
     ->expect(['dd', 'dump', 'ray'])
@@ -47,6 +49,7 @@ arch('package classes are not sealed against consumers')
         'Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor',
         'Cbox\LaravelQueueAutoscale\Scaling\DTOs\MemoryScopeKind',
         'Cbox\LaravelQueueAutoscale\Scaling\ScalingScope',
+        'Cbox\LaravelQueueAutoscale\Scaling\SlaSignalSource',
         'Cbox\LaravelQueueAutoscale\Diagnostics\Severity',
     ]);
 
@@ -67,6 +70,8 @@ test('readonly value objects returned by public methods can be constructed with 
         MeasuredResourceSample::class,
         CooldownDecision::class,
         DiscoveredWorkloads::class,
+        SlaSignal::class,
+        DemandAssessment::class,
     ];
 
     foreach ($returned as $class) {

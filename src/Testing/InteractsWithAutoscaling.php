@@ -7,7 +7,12 @@ namespace Cbox\LaravelQueueAutoscale\Testing;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\ClusterStoreContract;
 use Cbox\LaravelQueueAutoscale\Contracts\FailureWindowStoreContract;
+use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
+use Cbox\LaravelQueueAutoscale\Contracts\ScalingStrategyContract;
+use Cbox\LaravelQueueAutoscale\Manager\AutoscaleManager;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingEngine;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalResolver;
 use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
 use PHPUnit\Framework\Assert;
 
@@ -58,6 +63,76 @@ trait InteractsWithAutoscaling
         app()->instance(ClusterStoreContract::class, $store);
 
         return $store;
+    }
+
+    /**
+     * Replace the pickup-time store with an in-memory one.
+     *
+     * Returns it, so a spec can seed pickup times and see the strategy and the
+     * SLA breach state react to a measured percentile — the only signal a
+     * driver like Amazon SQS has, since it cannot report the oldest job's age.
+     *
+     * The strategy, engine and manager are resolved again on next use, because
+     * each holds the store it was built with.
+     */
+    protected function fakePickupTimes(): InMemoryPickupTimeStore
+    {
+        $store = new InMemoryPickupTimeStore;
+        app()->instance(PickupTimeStoreContract::class, $store);
+
+        app()->forgetInstance(ScalingStrategyContract::class);
+        app()->forgetInstance(SlaSignalResolver::class);
+        app()->forgetInstance(ScalingEngine::class);
+        app()->forgetInstance(AutoscaleManager::class);
+
+        return $store;
+    }
+
+    /**
+     * The SLA signal a queue in this state is judged on: what SlaBreached,
+     * SlaRecovered and the console's breach status are decided from.
+     *
+     * A pinned queue never runs the strategy, so it is measured the way the
+     * manager measures it rather than through a demand calculation.
+     */
+    protected function slaSignalFor(QueueMetricsData $metrics, ?QueueConfiguration $config = null): SlaSignal
+    {
+        $config ??= QueueConfiguration::fromConfig($metrics->connection, $metrics->queue);
+        $engine = app()->make(ScalingEngine::class);
+
+        return $config->workers->scalable
+            ? $engine->assessDemand($metrics, $config)->slaSignal
+            : $engine->measureSlaSignal($metrics, $config);
+    }
+
+    /**
+     * Assert a queue in this state is judged to be breaching its SLA.
+     */
+    protected function assertBreachesSla(QueueMetricsData $metrics, ?QueueConfiguration $config = null): void
+    {
+        $config ??= QueueConfiguration::fromConfig($metrics->connection, $metrics->queue);
+        $signal = $this->slaSignalFor($metrics, $config);
+
+        Assert::assertTrue(
+            $signal->isBreaching($config->sla->targetSeconds),
+            "Expected {$metrics->connection}:{$metrics->queue} to breach its {$config->sla->targetSeconds}s SLA, "
+            ."but it was judged on {$signal->describe()}."
+        );
+    }
+
+    /**
+     * Assert a queue in this state is judged to be within its SLA.
+     */
+    protected function assertWithinSla(QueueMetricsData $metrics, ?QueueConfiguration $config = null): void
+    {
+        $config ??= QueueConfiguration::fromConfig($metrics->connection, $metrics->queue);
+        $signal = $this->slaSignalFor($metrics, $config);
+
+        Assert::assertFalse(
+            $signal->isBreaching($config->sla->targetSeconds),
+            "Expected {$metrics->connection}:{$metrics->queue} to be within its {$config->sla->targetSeconds}s SLA, "
+            ."but it was judged on {$signal->describe()}."
+        );
     }
 
     /**

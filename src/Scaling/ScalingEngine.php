@@ -6,6 +6,7 @@ namespace Cbox\LaravelQueueAutoscale\Scaling;
 
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\ScalingStrategyContract;
+use Cbox\LaravelQueueAutoscale\Contracts\SlaSignalStrategy;
 use Cbox\LaravelQueueAutoscale\Fuse\FailureFuse;
 use Cbox\LaravelQueueAutoscale\Fuse\NullFailureWindowStore;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
@@ -20,12 +21,18 @@ readonly class ScalingEngine
      * including custom ones — is protected from scaling into a downstream
      * outage. It defaults to a null-backed fuse so an engine constructed
      * by hand behaves exactly as it did before the fuse existed.
+     *
+     * The SLA signal resolver is only consulted for workloads the strategy
+     * does not evaluate (pinned ones), and only when the strategy reports a
+     * signal of its own. Left null, as on an engine built by hand, those
+     * workloads are judged on the oldest job's age as they always were.
      */
     public function __construct(
         private ScalingStrategyContract $strategy,
         private CapacityCalculator $capacity,
         private ResourceEstimateResolver $resolver,
         private FailureFuse $fuse = new FailureFuse(new NullFailureWindowStore),
+        private ?SlaSignalResolver $slaSignals = null,
     ) {}
 
     /**
@@ -71,6 +78,7 @@ readonly class ScalingEngine
     ): ScalingDecision {
         // 1. Calculate target workers based on strategy
         $strategyRecommendation = $this->strategy->calculateTargetWorkers($metrics, $config);
+        $slaSignal = $this->signalOfLastCalculation($metrics);
         $targetWorkers = $strategyRecommendation;
 
         // 2. Get LOCAL system capacity using total pool workers for accurate measurement.
@@ -138,6 +146,7 @@ readonly class ScalingEngine
             slaTarget: $config->sla->targetSeconds,
             capacity: $finalCapacityResult,
             spawnCompensation: $config->spawnCompensation,
+            slaSignal: $slaSignal,
         );
     }
 
@@ -154,7 +163,19 @@ readonly class ScalingEngine
         QueueMetricsData $metrics,
         QueueConfiguration $config,
     ): int {
+        return $this->assessDemand($metrics, $config)->targetWorkers;
+    }
+
+    /**
+     * evaluateDemand(), plus the SLA signal the strategy computed the demand
+     * from — what the cluster leader decides breach on.
+     */
+    public function assessDemand(
+        QueueMetricsData $metrics,
+        QueueConfiguration $config,
+    ): DemandAssessment {
         $targetWorkers = $this->strategy->calculateTargetWorkers($metrics, $config);
+        $slaSignal = $this->signalOfLastCalculation($metrics);
         $targetWorkers = max($targetWorkers, $config->workers->min);
         $targetWorkers = min($targetWorkers, $config->workers->max);
 
@@ -169,7 +190,38 @@ readonly class ScalingEngine
             $targetWorkers = min($targetWorkers, max(0, min($fuseCeiling, $config->workers->max)));
         }
 
-        return $targetWorkers;
+        return new DemandAssessment($targetWorkers, $slaSignal);
+    }
+
+    /**
+     * The SLA signal of a workload the strategy does not evaluate.
+     *
+     * Pinned workloads hold a fixed worker count, so nothing runs the strategy
+     * for them — but they still breach and recover, and must be judged the way
+     * every other workload is. A strategy that reports signals gets the same
+     * measurement it would have made; one that does not, and an engine built
+     * without a resolver, get the oldest job's age, unchanged.
+     */
+    public function measureSlaSignal(QueueMetricsData $metrics, QueueConfiguration $config): SlaSignal
+    {
+        if ($this->strategy instanceof SlaSignalStrategy && $this->slaSignals !== null) {
+            return $this->slaSignals->resolve($metrics, $config);
+        }
+
+        return SlaSignal::fromOldestJobAge($metrics->oldestJobAge);
+    }
+
+    /**
+     * What the strategy reported for the calculation it just made, or the
+     * oldest job's age when it reports nothing.
+     */
+    private function signalOfLastCalculation(QueueMetricsData $metrics): SlaSignal
+    {
+        $reported = $this->strategy instanceof SlaSignalStrategy
+            ? $this->strategy->getLastSlaSignal()
+            : null;
+
+        return $reported ?? SlaSignal::fromOldestJobAge($metrics->oldestJobAge);
     }
 
     /**

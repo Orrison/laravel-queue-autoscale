@@ -34,6 +34,7 @@ use Cbox\LaravelQueueAutoscale\Output\DataTransferObjects\QueueStats;
 use Cbox\LaravelQueueAutoscale\Output\DataTransferObjects\WorkerStatus;
 use Cbox\LaravelQueueAutoscale\Policies\PolicyExecutor;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
+use Cbox\LaravelQueueAutoscale\Scaling\DemandAssessment;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\MeasuredResourceSample;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\SettlingWorker;
@@ -44,6 +45,7 @@ use Cbox\LaravelQueueAutoscale\Scaling\ResourceEstimateResolver;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingDecision;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingEngine;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingScope;
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 use Cbox\LaravelQueueAutoscale\Scaling\WorkloadDiscovery;
 use Cbox\LaravelQueueAutoscale\Scaling\WorkloadStateTracker;
 use Cbox\LaravelQueueAutoscale\Support\Coerce;
@@ -499,7 +501,6 @@ class AutoscaleManager
         $managerIds = array_map(static fn (ClusterManagerState $state): string => $state->managerId, $activeManagers);
         $assignedTotals = array_fill_keys($managerIds, 0);
         $assignments = array_fill_keys($managerIds, []);
-        $clusterTotalWorkers = array_sum(array_map(static fn (ClusterManagerState $state): int => $state->totalWorkers, $activeManagers));
         $clusterCapacity = array_sum(array_map(static fn (ClusterManagerState $state): int => $state->maxWorkers, $activeManagers));
 
         // Phase A: Collect demands for all workloads
@@ -533,8 +534,8 @@ class AutoscaleManager
                 $config = QueueConfiguration::fromConfig($metrics->connection, $metrics->queue);
                 $workloadKey = ClusterRecommendation::queueWorkloadKey($metrics->connection, $metrics->queue);
                 $currentWorkers = $this->clusterCurrentWorkers($activeManagers, $workloadKey);
-                $targetWorkers = $this->clusterTargetWorkers($config, $metrics, $currentWorkers, $clusterTotalWorkers);
-                $targetWorkers = $this->applyClusterScopedPolicies($metrics->connection, $metrics->queue, $currentWorkers, $targetWorkers, $config);
+                $assessment = $this->clusterDemand($config, $metrics);
+                $targetWorkers = $this->applyClusterScopedPolicies($metrics->connection, $metrics->queue, $currentWorkers, $assessment->targetWorkers, $config);
 
                 $demands[$workloadKey] = $targetWorkers;
                 $workerConfigs[$workloadKey] = [
@@ -550,6 +551,7 @@ class AutoscaleManager
                     currentWorkers: $currentWorkers,
                     metrics: $metrics,
                     memberQueues: [$metrics->queue],
+                    slaSignal: $assessment->slaSignal,
                 );
             } catch (\Throwable $e) {
                 $this->reportWorkloadFailure('queue', $metrics->connection, $metrics->queue, $e);
@@ -562,8 +564,8 @@ class AutoscaleManager
                 $config = $group->toScalingConfiguration();
                 $workloadKey = ClusterRecommendation::groupWorkloadKey($group->connection, $group->name);
                 $currentWorkers = $this->clusterCurrentWorkers($activeManagers, $workloadKey);
-                $targetWorkers = $this->clusterTargetWorkers($config, $aggregated, $currentWorkers, $clusterTotalWorkers);
-                $targetWorkers = $this->applyClusterScopedPolicies($group->connection, $group->name, $currentWorkers, $targetWorkers, $config);
+                $assessment = $this->clusterDemand($config, $aggregated);
+                $targetWorkers = $this->applyClusterScopedPolicies($group->connection, $group->name, $currentWorkers, $assessment->targetWorkers, $config);
 
                 $demands[$workloadKey] = $targetWorkers;
                 $workerConfigs[$workloadKey] = [
@@ -579,6 +581,7 @@ class AutoscaleManager
                     currentWorkers: $currentWorkers,
                     metrics: $aggregated,
                     memberQueues: array_values($group->queues),
+                    slaSignal: $assessment->slaSignal,
                 );
             } catch (\Throwable $e) {
                 $this->reportWorkloadFailure('group', $group->connection, $group->name, $e);
@@ -629,13 +632,29 @@ class AutoscaleManager
         // summaries, and record scaling decisions + SLA events.
         $workloads = [];
 
-        $dampedDecisions = $this->dampClusterTargets($adjustedTargets, $workloadMeta, $clusterCapacity);
+        // Judged once, before damping, against the previous cycle's state: the
+        // damper reports a breach override from it and Phase C fires the
+        // transition events from it, and the two must agree.
+        $breaching = [];
+
+        foreach ($adjustedTargets as $workloadKey => $targetWorkers) {
+            $meta = $workloadMeta[$workloadKey];
+            $breaching[$workloadKey] = $this->isInBreach(
+                $meta->breachKey(),
+                $meta->slaSignal(),
+                $meta->config->sla->targetSeconds,
+                $meta->metrics->pending,
+            );
+        }
+
+        $dampedDecisions = $this->dampClusterTargets($adjustedTargets, $workloadMeta, $clusterCapacity, $breaching);
 
         foreach ($adjustedTargets as $workloadKey => $targetWorkers) {
             $meta = $workloadMeta[$workloadKey];
             $currentWorkers = $meta->currentWorkers;
             $slaTarget = $meta->config->sla->targetSeconds;
-            $isBreaching = $meta->isBreaching();
+            $isBreaching = $breaching[$workloadKey];
+            $slaSignal = $meta->slaSignal();
             $damped = $dampedDecisions[$workloadKey];
 
             if ($damped->wasHeld) {
@@ -667,6 +686,9 @@ class AutoscaleManager
                 'pending' => $meta->metrics->pending,
                 'oldest_job_age' => $meta->metrics->oldestJobAge,
                 'oldest_job_age_status' => $meta->metrics->ageStatus,
+                'sla_signal_seconds' => round($slaSignal->seconds, 3),
+                'sla_signal_source' => $slaSignal->source->value,
+                'sla_status' => $this->slaStatus($isBreaching, $slaSignal, $slaTarget),
                 'throughput_per_minute' => $meta->metrics->throughputPerMinute,
                 'active_workers' => $meta->metrics->activeWorkers,
                 'utilization_percent' => round($meta->metrics->utilizationRate, 1),
@@ -712,30 +734,16 @@ class AutoscaleManager
             // as it acts.
 
             // SLA breach/recovery tracking
-            $breachKey = $meta->breachKey();
-            $wasBreaching = $this->workloadState->wasBreaching($breachKey);
-
-            if ($isBreaching && ! $wasBreaching) {
-                event(new SlaBreached(
-                    connection: $meta->connection,
-                    queue: $meta->name,
-                    oldestJobAge: $meta->metrics->oldestJobAge,
-                    slaTarget: $slaTarget,
-                    pending: $meta->metrics->pending,
-                    activeWorkers: $meta->metrics->activeWorkers,
-                ));
-            } elseif (! $isBreaching && $wasBreaching) {
-                event(new SlaRecovered(
-                    connection: $meta->connection,
-                    queue: $meta->name,
-                    currentJobAge: $meta->metrics->oldestJobAge,
-                    slaTarget: $slaTarget,
-                    pending: $meta->metrics->pending,
-                    activeWorkers: $meta->metrics->activeWorkers,
-                ));
-            }
-
-            $this->workloadState->setBreaching($breachKey, $isBreaching);
+            $this->recordSlaBreachState(
+                breachKey: $meta->breachKey(),
+                isBreaching: $isBreaching,
+                connection: $meta->connection,
+                name: $meta->name,
+                slaSignal: $slaSignal,
+                slaTarget: $slaTarget,
+                metrics: $meta->metrics,
+                activeWorkers: $meta->metrics->activeWorkers,
+            );
 
             if ($decision->isSlaBreachRisk()) {
                 event(new SlaBreachPredicted($decision));
@@ -933,9 +941,12 @@ class AutoscaleManager
      *
      * @param  array<string, int>  $adjustedTargets
      * @param  array<string, EvaluatedWorkload>  $workloadMeta
+     * @param  array<string, bool>  $breaching  Each workload's breach state this cycle, keyed like
+     *                                          $adjustedTargets. A workload missing from it is judged on
+     *                                          its instantaneous signal alone.
      * @return array<string, CooldownDecision>
      */
-    private function dampClusterTargets(array $adjustedTargets, array $workloadMeta, int $clusterCapacity): array
+    private function dampClusterTargets(array $adjustedTargets, array $workloadMeta, int $clusterCapacity, array $breaching = []): array
     {
         $cooldownSeconds = Coerce::toInt(config('queue-autoscale.scaling.cooldown_seconds', 60)) ?: 60;
 
@@ -956,7 +967,7 @@ class AutoscaleManager
                     $workloadKey,
                     $meta->currentWorkers,
                     $targetWorkers,
-                    $meta->isBreaching(),
+                    $breaching[$workloadKey] ?? $meta->isBreaching(),
                     $cooldownSeconds,
                 );
 
@@ -1006,14 +1017,21 @@ class AutoscaleManager
         return $decisions;
     }
 
-    private function clusterTargetWorkers(
+    /**
+     * A workload's cluster-wide demand and the SLA signal it is judged on.
+     *
+     * Pinned workloads skip the strategy, so their signal is measured
+     * directly; everything else carries the signal the strategy scaled on.
+     */
+    private function clusterDemand(
         QueueConfiguration $config,
         QueueMetricsData $metrics,
-        int $currentWorkers,
-        int $clusterTotalWorkers,
-    ): int {
+    ): DemandAssessment {
         if (! $config->workers->scalable) {
-            return $config->workers->pinnedCount();
+            return new DemandAssessment(
+                $config->workers->pinnedCount(),
+                $this->engine->measureSlaSignal($metrics, $config),
+            );
         }
 
         // Use demand-only evaluation: strategy + config bounds, no system
@@ -1021,7 +1039,7 @@ class AutoscaleManager
         // recommend the right host count and distribute work across all
         // managers. Per-host capacity enforcement happens during distribution
         // (distributeClusterTarget respects each manager's maxWorkers).
-        return $this->engine->evaluateDemand($metrics, $config);
+        return $this->engine->assessDemand($metrics, $config);
     }
 
     /**
@@ -1705,16 +1723,17 @@ class AutoscaleManager
         // 3. Calculate scaling decision (total pool count ensures capacity is shared across queues)
         $decision = $this->engine->evaluate($metrics, $config, $currentWorkers, $totalPoolWorkers);
 
-        // 4. Check for SLA breach
-        $isBreaching = $metrics->oldestJobAge > 0 && $metrics->oldestJobAge >= $config->sla->targetSeconds;
+        // 4. Check for SLA breach, on the signal the strategy scaled on
+        $key = "{$connection}:{$queue}";
+        $slaSignal = $decision->slaSignal ?? SlaSignal::fromOldestJobAge($metrics->oldestJobAge);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics->pending);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 SLA BREACH: oldest_age={$metrics->oldestJobAge}s >= SLA={$config->sla->targetSeconds}s", 'error');
+            $this->verbose("  🚨 SLA BREACH: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
         }
 
         // 5. Anti-flapping check: hold a scale-DOWN that reverses a recent
         // scale-up. A scale-up is never held — see WorkloadStateTracker.
-        $key = "{$connection}:{$queue}";
         $currentDirection = $decision->shouldScaleUp() ? 'up' : ($decision->shouldScaleDown() ? 'down' : 'hold');
         $scaleCooldownSeconds = Coerce::toInt(config('queue-autoscale.scaling.cooldown_seconds', 60)) ?: 60;
 
@@ -1782,7 +1801,7 @@ class AutoscaleManager
         }
 
         // 6b. Store queue stats for renderer
-        $slaStatus = $isBreaching ? 'breached' : ($metrics->oldestJobAge > $config->sla->targetSeconds * 0.8 ? 'warning' : 'ok');
+        $slaStatus = $this->slaStatus($isBreaching, $slaSignal, $config->sla->targetSeconds);
         $this->currentQueueStats[$key] = new QueueStats(
             connection: $connection,
             queue: $queue,
@@ -1814,37 +1833,16 @@ class AutoscaleManager
         }
 
         // Track SLA breach state and fire breach/recovery events
-        $wasBreaching = $this->workloadState->wasBreaching($key);
-
-        if ($isBreaching && ! $wasBreaching) {
-            // Entering breach state - fire SlaBreached
-            event(new SlaBreached(
-                connection: $config->connection,
-                queue: $config->queue,
-                oldestJobAge: $metrics->oldestJobAge,
-                slaTarget: $config->sla->targetSeconds,
-                pending: $metrics->pending,
-                activeWorkers: $metrics->activeWorkers,
-            ));
-            $this->workloadState->setBreaching($key, true);
-        } elseif (! $isBreaching && $wasBreaching) {
-            // Recovering from breach - fire SlaRecovered
-            event(new SlaRecovered(
-                connection: $config->connection,
-                queue: $config->queue,
-                currentJobAge: $metrics->oldestJobAge,
-                slaTarget: $config->sla->targetSeconds,
-                pending: $metrics->pending,
-                activeWorkers: $metrics->activeWorkers,
-            ));
-            $this->workloadState->setBreaching($key, false);
-        } elseif ($isBreaching) {
-            // Update breach state (still breaching)
-            $this->workloadState->setBreaching($key, true);
-        } else {
-            // Update breach state (not breaching)
-            $this->workloadState->setBreaching($key, false);
-        }
+        $this->recordSlaBreachState(
+            breachKey: $key,
+            isBreaching: $isBreaching,
+            connection: $config->connection,
+            name: $config->queue,
+            slaSignal: $slaSignal,
+            slaTarget: $config->sla->targetSeconds,
+            metrics: $metrics,
+            activeWorkers: $metrics->activeWorkers,
+        );
 
         // 11. Update last scale time and direction
         //
@@ -1881,10 +1879,11 @@ class AutoscaleManager
         $config = $group->toScalingConfiguration();
         $decision = $this->engine->evaluate($aggregated, $config, $currentWorkers, $totalPoolWorkers);
 
-        $isBreaching = $aggregated->oldestJobAge > 0 && $aggregated->oldestJobAge >= $group->sla->targetSeconds;
+        $slaSignal = $decision->slaSignal ?? SlaSignal::fromOldestJobAge($aggregated->oldestJobAge);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $group->sla->targetSeconds, $aggregated->pending);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 GROUP SLA BREACH: worst oldest_age={$aggregated->oldestJobAge}s >= SLA={$group->sla->targetSeconds}s", 'error');
+            $this->verbose("  🚨 GROUP SLA BREACH: {$slaSignal->describe()} >= SLA={$group->sla->targetSeconds}s", 'error');
         }
 
         // Anti-flapping check (same semantics as per-queue).
@@ -1904,7 +1903,7 @@ class AutoscaleManager
         $this->verbose("     Reason: {$decision->reason}", 'info');
         $this->logFuseHold($decision);
 
-        $slaStatus = $isBreaching ? 'breached' : ($aggregated->oldestJobAge > $group->sla->targetSeconds * 0.8 ? 'warning' : 'ok');
+        $slaStatus = $this->slaStatus($isBreaching, $slaSignal, $group->sla->targetSeconds);
         $this->currentQueueStats[$key] = new QueueStats(
             connection: $group->connection,
             queue: "[group] {$group->name}",
@@ -1933,29 +1932,16 @@ class AutoscaleManager
         }
 
         // SLA breach state for groups mirrors the per-queue event flow.
-        $wasBreaching = $this->workloadState->wasBreaching($key);
-
-        if ($isBreaching && ! $wasBreaching) {
-            event(new SlaBreached(
-                connection: $group->connection,
-                queue: $group->name,
-                oldestJobAge: $aggregated->oldestJobAge,
-                slaTarget: $group->sla->targetSeconds,
-                pending: $aggregated->pending,
-                activeWorkers: $currentWorkers,
-            ));
-        } elseif (! $isBreaching && $wasBreaching) {
-            event(new SlaRecovered(
-                connection: $group->connection,
-                queue: $group->name,
-                currentJobAge: $aggregated->oldestJobAge,
-                slaTarget: $group->sla->targetSeconds,
-                pending: $aggregated->pending,
-                activeWorkers: $currentWorkers,
-            ));
-        }
-
-        $this->workloadState->setBreaching($key, $isBreaching);
+        $this->recordSlaBreachState(
+            breachKey: $key,
+            isBreaching: $isBreaching,
+            connection: $group->connection,
+            name: $group->name,
+            slaSignal: $slaSignal,
+            slaTarget: $group->sla->targetSeconds,
+            metrics: $aggregated,
+            activeWorkers: $currentWorkers,
+        );
 
         // The direction that actually happened — see evaluateQueue.
         if (! $finalDecision->shouldHold()) {
@@ -1994,10 +1980,11 @@ class AutoscaleManager
         $this->verbose("  🔒 Exclusive/pinned queue: enforcing {$target} worker(s), current={$current}", 'debug');
 
         // Track SLA breach state for events, even though we cannot scale to fix it.
-        $isBreaching = $metrics->oldestJobAge > 0 && $metrics->oldestJobAge >= $config->sla->targetSeconds;
+        $slaSignal = $this->engine->measureSlaSignal($metrics, $config);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics->pending);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 SLA BREACH on pinned queue: oldest_age={$metrics->oldestJobAge}s >= SLA={$config->sla->targetSeconds}s", 'error');
+            $this->verbose("  🚨 SLA BREACH on pinned queue: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
         }
 
         if ($current < $target) {
@@ -2085,7 +2072,7 @@ class AutoscaleManager
         }
 
         // Keep queue stats fresh so the renderer shows pinned queues too.
-        $slaStatus = $isBreaching ? 'breached' : ($metrics->oldestJobAge > $config->sla->targetSeconds * 0.8 ? 'warning' : 'ok');
+        $slaStatus = $this->slaStatus($isBreaching, $slaSignal, $config->sla->targetSeconds);
         $this->currentQueueStats[$key] = new QueueStats(
             connection: $connection,
             queue: $queue,
@@ -2102,31 +2089,94 @@ class AutoscaleManager
         );
 
         // Fire SLA events even though we can't scale — operators need to know.
-        $wasBreaching = $this->workloadState->wasBreaching($key);
+        $this->recordSlaBreachState(
+            breachKey: $key,
+            isBreaching: $isBreaching,
+            connection: $connection,
+            name: $queue,
+            slaSignal: $slaSignal,
+            slaTarget: $config->sla->targetSeconds,
+            metrics: $metrics,
+            activeWorkers: $current,
+        );
+
+        $this->policies->afterScaling($decision);
+    }
+
+    /**
+     * Whether a workload is in SLA breach this cycle.
+     *
+     * A signal at or over the target opens or continues a breach. Below it,
+     * an open breach is held only through a reading that carries no evidence
+     * either way — see SlaSignal::isInconclusive() — so a percentile-measured
+     * breach on a driver that cannot report the oldest job's age does not
+     * flap every time the pickup window crosses `sla.min_samples`.
+     *
+     * Read before recordSlaBreachState() updates the remembered state, so the
+     * question is always asked against the previous cycle's answer.
+     */
+    private function isInBreach(string $breachKey, SlaSignal $slaSignal, int $slaTarget, int $pending): bool
+    {
+        if ($slaSignal->isBreaching($slaTarget)) {
+            return true;
+        }
+
+        return $this->workloadState->wasBreaching($breachKey) && $slaSignal->isInconclusive($pending);
+    }
+
+    /**
+     * The console's 'breached' / 'warning' / 'ok', from the same signal and
+     * breach state the events are fired from.
+     */
+    private function slaStatus(bool $isBreaching, SlaSignal $slaSignal, int $slaTarget): string
+    {
+        if ($isBreaching) {
+            return 'breached';
+        }
+
+        return $slaSignal->isWarning($slaTarget) ? 'warning' : 'ok';
+    }
+
+    /**
+     * Fire SlaBreached / SlaRecovered on a state transition and remember the
+     * new state. Shared by every path that judges a workload — queue, group,
+     * pinned queue and cluster leader — so they cannot drift apart again.
+     */
+    private function recordSlaBreachState(
+        string $breachKey,
+        bool $isBreaching,
+        string $connection,
+        string $name,
+        SlaSignal $slaSignal,
+        int $slaTarget,
+        QueueMetricsData $metrics,
+        int $activeWorkers,
+    ): void {
+        $wasBreaching = $this->workloadState->wasBreaching($breachKey);
 
         if ($isBreaching && ! $wasBreaching) {
             event(new SlaBreached(
                 connection: $connection,
-                queue: $queue,
+                queue: $name,
                 oldestJobAge: $metrics->oldestJobAge,
-                slaTarget: $config->sla->targetSeconds,
+                slaTarget: $slaTarget,
                 pending: $metrics->pending,
-                activeWorkers: $current,
+                activeWorkers: $activeWorkers,
+                slaSignal: $slaSignal,
             ));
         } elseif (! $isBreaching && $wasBreaching) {
             event(new SlaRecovered(
                 connection: $connection,
-                queue: $queue,
+                queue: $name,
                 currentJobAge: $metrics->oldestJobAge,
-                slaTarget: $config->sla->targetSeconds,
+                slaTarget: $slaTarget,
                 pending: $metrics->pending,
-                activeWorkers: $current,
+                activeWorkers: $activeWorkers,
+                slaSignal: $slaSignal,
             ));
         }
 
-        $this->workloadState->setBreaching($key, $isBreaching);
-
-        $this->policies->afterScaling($decision);
+        $this->workloadState->setBreaching($breachKey, $isBreaching);
     }
 
     private function processWorkerOutput(): void

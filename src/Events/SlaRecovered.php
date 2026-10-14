@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cbox\LaravelQueueAutoscale\Events;
 
+use Cbox\LaravelQueueAutoscale\Scaling\SlaSignal;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -11,8 +12,10 @@ use Illuminate\Queue\SerializesModels;
 /**
  * Event fired when a queue recovers from an SLA breach
  *
- * This event is fired when a queue that was previously breaching its SLA
- * has recovered and is now processing within the SLA target.
+ * Fired once, when a workload that was breaching has an SLA signal back under
+ * its target — the same signal SlaBreached was decided on. With a pickup-time
+ * percentile that means the percentile over the SLA window has dropped below
+ * the target, which can trail the backlog clearing by up to one window.
  *
  * Use this event to:
  * - Close alerts and incidents
@@ -26,6 +29,12 @@ class SlaRecovered
     use InteractsWithSockets;
     use SerializesModels;
 
+    /**
+     * @param  int  $currentJobAge  The oldest pending job's age as the driver reported it. Always 0 on
+     *                              drivers that cannot report it, such as Amazon SQS.
+     * @param  SlaSignal|null  $slaSignal  The signal recovery was decided on. Null only on an event
+     *                                     built by hand; the accessors then use $currentJobAge.
+     */
     public function __construct(
         public readonly string $connection,
         public readonly string $queue,
@@ -33,14 +42,23 @@ class SlaRecovered
         public readonly int $slaTarget,
         public readonly int $pending,
         public readonly int $activeWorkers,
+        public readonly ?SlaSignal $slaSignal = null,
     ) {}
 
     /**
-     * Get the current margin below SLA (safety buffer)
+     * The measured wait recovery was decided on, in seconds.
+     */
+    public function signalSeconds(): float
+    {
+        return $this->slaSignal->seconds ?? (float) $this->currentJobAge;
+    }
+
+    /**
+     * Get the current margin below SLA (safety buffer), in whole seconds
      */
     public function marginSeconds(): int
     {
-        return max(0, $this->slaTarget - $this->currentJobAge);
+        return max(0, (int) floor($this->slaTarget - $this->signalSeconds()));
     }
 
     /**
@@ -52,6 +70,6 @@ class SlaRecovered
             return 0.0;
         }
 
-        return (($this->slaTarget - $this->currentJobAge) / $this->slaTarget) * 100;
+        return (($this->slaTarget - $this->signalSeconds()) / $this->slaTarget) * 100;
     }
 }

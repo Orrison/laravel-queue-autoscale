@@ -117,6 +117,27 @@ class QueueMetricsFactory
         ]);
     }
 
+    /**
+     * A queue on a driver that cannot report its oldest job's age, the way
+     * Amazon SQS reports one: an approximate depth, and an oldest age of 0
+     * however long the backlog has been waiting.
+     *
+     * Pair it with a seeded pickup-time store to give the strategy the only
+     * SLA signal such a driver has.
+     */
+    public static function onSqs(int $pending, string $queue = 'default', int $activeWorkers = 0, string $connection = 'sqs'): QueueMetricsData
+    {
+        return self::make([
+            'connection' => $connection,
+            'queue' => $queue,
+            'driver' => 'sqs',
+            'depth' => $pending,
+            'pending' => $pending,
+            'oldestJobAge' => 0,
+            'activeWorkers' => $activeWorkers,
+        ]);
+    }
+
     private static function str(mixed $value): string
     {
         return is_string($value) ? $value : '';

@@ -155,6 +155,8 @@ class TelemetryEventSubscriber
         $telemetry->event('queue_autoscale.sla.breached', [
             ...$labels,
             'oldest_job_age' => $event->oldestJobAge,
+            'sla_signal_seconds' => $event->signalSeconds(),
+            'sla_signal_source' => $event->slaSignal->source->value ?? 'oldest_job_age',
             'sla_target' => $event->slaTarget,
             'breach_seconds' => $event->breachSeconds(),
             'breach_percentage' => $event->breachPercentage(),
@@ -180,6 +182,8 @@ class TelemetryEventSubscriber
         $telemetry->event('queue_autoscale.sla.recovered', [
             ...$labels,
             'current_job_age' => $event->currentJobAge,
+            'sla_signal_seconds' => $event->signalSeconds(),
+            'sla_signal_source' => $event->slaSignal->source->value ?? 'oldest_job_age',
             'sla_target' => $event->slaTarget,
             'margin_seconds' => $event->marginSeconds(),
             'pending' => $event->pending,

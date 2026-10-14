@@ -9,6 +9,11 @@ use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 
 readonly class ScalingDecision
 {
+    /**
+     * @param  SlaSignal|null  $slaSignal  The SLA signal the engine judged this workload on: the strategy's
+     *                                     own when it implements SlaSignalStrategy, the oldest job's age
+     *                                     otherwise. Null on a decision built outside the engine.
+     */
     public function __construct(
         public string $connection,
         public string $queue,
@@ -20,6 +25,7 @@ readonly class ScalingDecision
         public ?CapacityCalculationResult $capacity = null,
         public ?SpawnCompensationConfiguration $spawnCompensation = null,
         public ScalingScope $scope = ScalingScope::Host,
+        public ?SlaSignal $slaSignal = null,
     ) {}
 
     /**
@@ -41,6 +47,7 @@ readonly class ScalingDecision
             capacity: $this->capacity,
             spawnCompensation: $this->spawnCompensation,
             scope: $this->scope,
+            slaSignal: $this->slaSignal,
         );
     }
 

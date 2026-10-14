@@ -142,9 +142,56 @@ readonly class LaravelQueueAutoscale
                 'value' => $this->metricInt($workload['oldest_job_age'] ?? 0),
                 'labels' => $labels,
             ];
+            $metrics[] = [
+                'name' => 'queue_autoscale_workload_sla_signal_seconds',
+                'value' => $this->workloadSlaSignalSeconds($workload),
+                'labels' => $labels,
+            ];
+            $metrics[] = [
+                'name' => 'queue_autoscale_workload_sla_breaching',
+                'value' => $this->workloadIsBreaching($workload) ? 1 : 0,
+                'labels' => $labels,
+            ];
         }
 
         return $metrics;
+    }
+
+    /**
+     * The number the workload's SLA was judged on.
+     *
+     * A summary published by a leader older than SLA signals has no
+     * `sla_signal_seconds`; the oldest job's age is what that leader judged
+     * breach on, so it is the honest substitute.
+     *
+     * @param  array<mixed>  $workload
+     */
+    private function workloadSlaSignalSeconds(array $workload): float
+    {
+        return array_key_exists('sla_signal_seconds', $workload)
+            ? $this->metricFloat($workload['sla_signal_seconds'])
+            : $this->metricFloat($workload['oldest_job_age'] ?? 0);
+    }
+
+    /**
+     * Whether the leader judged the workload in breach.
+     *
+     * Read from the published `sla_status` when present, because only the
+     * leader knows whether an open breach is being held through an
+     * inconclusive reading. A summary from an older leader is judged the way
+     * that leader judged it: oldest job age at or over the target.
+     *
+     * @param  array<mixed>  $workload
+     */
+    private function workloadIsBreaching(array $workload): bool
+    {
+        if (array_key_exists('sla_status', $workload)) {
+            return $workload['sla_status'] === 'breached';
+        }
+
+        $oldestJobAge = $this->metricInt($workload['oldest_job_age'] ?? 0);
+
+        return $oldestJobAge > 0 && $oldestJobAge >= $this->metricInt($workload['sla_target_seconds'] ?? 0);
     }
 
     private function metricLabel(mixed $value): bool|float|int|string|null
