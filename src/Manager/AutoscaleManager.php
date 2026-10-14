@@ -2212,12 +2212,14 @@ class AutoscaleManager
         $this->terminator->terminateAll(
             $this->pool->all(),
             function (WorkerProcess $worker): void {
-                $this->verbose("   ✓ Terminating worker: PID {$worker->pid()}", 'info');
+                $this->duringShutdown('report a terminating worker', function () use ($worker): void {
+                    $this->verbose("   ✓ Terminating worker: PID {$worker->pid()}", 'info');
+                });
             },
-            fn () => $this->collectExitedWorkers(),
+            fn () => $this->duringShutdown('collect exited workers', fn () => $this->collectExitedWorkers()),
         );
 
-        $this->collectExitedWorkers();
+        $this->duringShutdown('collect exited workers', fn () => $this->collectExitedWorkers());
 
         $this->leaveCluster();
 
@@ -2236,6 +2238,37 @@ class AutoscaleManager
         ));
 
         $this->verbose('✓ Shutdown complete', 'info');
+    }
+
+    /**
+     * Run a reporting step of shutdown without letting it abort shutdown.
+     *
+     * These steps call into host code — WorkerExited listeners, log handlers,
+     * the console renderer — while workers are still being stopped. An
+     * exception escaping from one would unwind out of terminateAll() before
+     * its SIGKILL step, leaving workers that ignore SIGTERM running with no
+     * manager, and would skip leaving the cluster and AutoscaleManagerStopped.
+     * Stopping the workers matters more than reporting on them.
+     *
+     * The failure is logged best-effort: when the log handler is itself what
+     * threw, logging again would throw too, so it falls back to error_log().
+     *
+     * @param  \Closure(): void  $step
+     */
+    private function duringShutdown(string $description, \Closure $step): void
+    {
+        try {
+            $step();
+        } catch (\Throwable $e) {
+            try {
+                Log::channel(AutoscaleConfiguration::logChannel())->error(
+                    "Could not {$description} during shutdown; continuing",
+                    ['exception' => $e::class, 'message' => $e->getMessage()]
+                );
+            } catch (\Throwable) {
+                error_log("queue-autoscale: could not {$description} during shutdown: {$e->getMessage()}");
+            }
+        }
     }
 
     private function dispatchLeaderChanged(?string $currentLeaderId): void
