@@ -12,6 +12,7 @@ use Cbox\LaravelQueueAutoscale\Fuse\NullFailureWindowStore;
 use Cbox\LaravelQueueAutoscale\Scaling\Calculators\CapacityCalculator;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\CapacityCalculationResult;
 use Cbox\LaravelQueueAutoscale\Scaling\DTOs\LimitingFactor;
+use Cbox\LaravelQueueAutoscale\Scaling\Strategies\HybridStrategy;
 use Cbox\LaravelQueueMetrics\DataTransferObjects\QueueMetricsData;
 
 readonly class ScalingEngine
@@ -78,7 +79,7 @@ readonly class ScalingEngine
     ): ScalingDecision {
         // 1. Calculate target workers based on strategy
         $strategyRecommendation = $this->strategy->calculateTargetWorkers($metrics, $config);
-        $slaSignal = $this->signalOfLastCalculation($metrics);
+        $slaSignal = $this->signalOfLastCalculation($metrics, $config);
         $targetWorkers = $strategyRecommendation;
 
         // 2. Get LOCAL system capacity using total pool workers for accurate measurement.
@@ -175,7 +176,7 @@ readonly class ScalingEngine
         QueueConfiguration $config,
     ): DemandAssessment {
         $targetWorkers = $this->strategy->calculateTargetWorkers($metrics, $config);
-        $slaSignal = $this->signalOfLastCalculation($metrics);
+        $slaSignal = $this->signalOfLastCalculation($metrics, $config);
         $targetWorkers = max($targetWorkers, $config->workers->min);
         $targetWorkers = min($targetWorkers, $config->workers->max);
 
@@ -219,12 +220,19 @@ readonly class ScalingEngine
      * on whichever of the two is further behind; see
      * SlaSignal::withOldestJobAge(). The strategy still scales on the signal
      * it computed.
+     *
+     * The shipped strategy is asked for the signal of this workload rather
+     * than its last one, so a subclass that answers some workloads without
+     * reaching the parent cannot pass another workload's signal off as this
+     * one's. See HybridStrategy::slaSignalFor().
      */
-    private function signalOfLastCalculation(QueueMetricsData $metrics): SlaSignal
+    private function signalOfLastCalculation(QueueMetricsData $metrics, QueueConfiguration $config): SlaSignal
     {
-        $reported = $this->strategy instanceof SlaSignalStrategy
-            ? $this->strategy->getLastSlaSignal()
-            : null;
+        $reported = match (true) {
+            $this->strategy instanceof HybridStrategy => $this->strategy->slaSignalFor($config),
+            $this->strategy instanceof SlaSignalStrategy => $this->strategy->getLastSlaSignal(),
+            default => null,
+        };
 
         return ($reported ?? SlaSignal::fromOldestJobAge($metrics->oldestJobAge))
             ->withOldestJobAge($metrics->oldestJobAge);

@@ -417,6 +417,10 @@ Rules the manager relies on:
 - **The head of the queue still counts.** The manager raises your signal to the oldest pending
   job's age when that is larger, so a stall your measurement cannot see still breaches. Your
   strategy's own target is unaffected.
+- **Subclassing `HybridStrategy` is safe.** The manager asks it for the signal of the workload it
+  is judging (`slaSignalFor()`), so an override of `calculateTargetWorkers()` that answers some
+  queues without calling `parent::` judges those queues on the oldest job's age, not on the signal
+  the parent last measured for another queue.
 - **Pinned workloads skip the strategy.** For those the manager measures with `SlaSignalResolver`
   directly, so a strategy with its own, different measurement is judged on the shipped one there.
 

@@ -136,6 +136,39 @@ test('a signal never leaks from one queue to the next', function (): void {
         ->seconds->toBe(1.0);
 });
 
+test('the hybrid strategy hands out its signal only for the workload it measured', function (): void {
+    $this->store->seedRepeated(20, 48.0, 'redis', 'slow');
+    $strategy = signalHybrid($this->store);
+
+    $strategy->calculateTargetWorkers(QueueMetricsFactory::backlogged(10, 'slow'), makeQueueConfig(['queue' => 'slow']));
+
+    expect($strategy->slaSignalFor(makeQueueConfig(['queue' => 'slow'])))->toEqual(SlaSignal::fromPickupPercentile(48.0, 95))
+        ->and($strategy->slaSignalFor(makeQueueConfig(['queue' => 'quiet'])))->toBeNull()
+        ->and($strategy->slaSignalFor(makeQueueConfig(['queue' => 'slow', 'connection' => 'sqs'])))->toBeNull()
+        ->and(signalHybrid($this->store)->slaSignalFor(makeQueueConfig(['queue' => 'slow'])))->toBeNull();
+});
+
+test('a subclass that answers a queue itself does not inherit the previous queue signal', function (): void {
+    $this->store->seedRepeated(20, 45.0, 'redis', 'hot');
+    $spawnTracker = (new ReflectionProperty(HybridStrategy::class, 'spawnTracker'))->getValue(signalHybrid($this->store));
+
+    $strategy = new class(new LittlesLawCalculator, new BacklogDrainCalculator, new ArrivalRateEstimator, $spawnTracker, $this->store, new SortBasedPercentileCalculator) extends HybridStrategy
+    {
+        public function calculateTargetWorkers(QueueMetricsData $metrics, QueueConfiguration $config): int
+        {
+            return $config->queue === 'quiet' ? 0 : parent::calculateTargetWorkers($metrics, $config);
+        }
+    };
+
+    $engine = signalEngine($strategy);
+    $hot = $engine->assessDemand(QueueMetricsFactory::backlogged(100, 'hot'), makeQueueConfig(['queue' => 'hot']));
+    $quiet = $engine->assessDemand(QueueMetricsFactory::idle('quiet'), makeQueueConfig(['queue' => 'quiet']));
+
+    expect($hot->slaSignal)->toEqual(SlaSignal::fromPickupPercentile(45.0, 95))
+        ->and($quiet->slaSignal)->toEqual(SlaSignal::fromOldestJobAge(0))
+        ->and($quiet->slaSignal->isBreaching(30))->toBeFalse();
+});
+
 test('a decision from the engine carries the strategy signal', function (): void {
     $this->store->seedRepeated(20, 48.0, 'sqs', 'default');
     $engine = signalEngine(signalHybrid($this->store));

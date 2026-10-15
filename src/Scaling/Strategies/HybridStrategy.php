@@ -48,6 +48,11 @@ class HybridStrategy implements SlaSignalStrategy
     private ?SlaSignal $lastSlaSignal = null;
 
     /**
+     * The workload the last SLA signal was measured for, as `connection:queue`.
+     */
+    private ?string $lastSlaSignalWorkload = null;
+
+    /**
      * Resolved forecaster/policy pairs, keyed by the configuration that
      * produced them.
      *
@@ -78,6 +83,7 @@ class HybridStrategy implements SlaSignalStrategy
         $this->usedFallback = false;
         $this->arrivalRateSource = '';
         $this->lastSlaSignal = null;
+        $this->lastSlaSignalWorkload = null;
 
         // Determine average job time
         [$avgJobTime, $jobTimeSource] = $this->determineJobTime($metrics);
@@ -158,6 +164,7 @@ class HybridStrategy implements SlaSignalStrategy
         // decides breach from this number rather than measuring again.
         $this->lastSlaSignal = (new SlaSignalResolver($this->pickupStore, $this->percentileCalc))
             ->resolve($metrics, $config);
+        $this->lastSlaSignalWorkload = self::workloadKey($config);
         $p95 = $this->lastSlaSignal->source === SlaSignalSource::PickupPercentile
             ? $this->lastSlaSignal->seconds
             : null;
@@ -396,6 +403,29 @@ class HybridStrategy implements SlaSignalStrategy
     public function getLastSlaSignal(): ?SlaSignal
     {
         return $this->lastSlaSignal;
+    }
+
+    /**
+     * The last SLA signal, but only when it was measured for this workload.
+     *
+     * The signal is reset and measured inside calculateTargetWorkers(). A
+     * subclass that overrides that method and answers some workloads without
+     * calling the parent would otherwise hand the engine the signal of
+     * whichever workload last reached the parent: an empty queue judged on a
+     * busy one's 45-second p95 fires SlaBreached for a breach it does not
+     * have. The engine reads the signal through here, so a mismatch falls back
+     * to the oldest job's age instead.
+     */
+    public function slaSignalFor(QueueConfiguration $config): ?SlaSignal
+    {
+        return $this->lastSlaSignalWorkload === self::workloadKey($config)
+            ? $this->lastSlaSignal
+            : null;
+    }
+
+    private static function workloadKey(QueueConfiguration $config): string
+    {
+        return "{$config->connection}:{$config->queue}";
     }
 
     public function getLastPrediction(): ?float
