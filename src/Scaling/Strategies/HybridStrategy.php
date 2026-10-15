@@ -422,11 +422,14 @@ class HybridStrategy implements SlaSignalStrategy
      * busy one's 45-second p95 fires SlaBreached for a breach it does not
      * have. The engine reads the signal through here, so a mismatch falls back
      * to the oldest job's age instead.
+     *
+     * A match goes through getLastSlaSignal(), so a subclass that overrides
+     * that hook still decides what the engine sees.
      */
     public function slaSignalFor(QueueConfiguration $config): ?SlaSignal
     {
         return $this->lastSlaSignalWorkload === self::workloadKey($config)
-            ? $this->lastSlaSignal
+            ? $this->getLastSlaSignal()
             : null;
     }
 

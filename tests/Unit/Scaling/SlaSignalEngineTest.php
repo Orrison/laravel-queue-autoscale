@@ -169,6 +169,28 @@ test('a subclass that answers a queue itself does not inherit the previous queue
         ->and($quiet->slaSignal->isBreaching(30))->toBeFalse();
 });
 
+test('a subclass overriding getLastSlaSignal decides the signal the engine sees', function (): void {
+    $this->store->seedRepeated(20, 48.0);
+    $spawnTracker = (new ReflectionProperty(HybridStrategy::class, 'spawnTracker'))->getValue(signalHybrid($this->store));
+
+    $strategy = new class(new LittlesLawCalculator, new BacklogDrainCalculator, new ArrivalRateEstimator, $spawnTracker, $this->store, new SortBasedPercentileCalculator) extends HybridStrategy
+    {
+        public function getLastSlaSignal(): ?SlaSignal
+        {
+            $measured = parent::getLastSlaSignal();
+
+            return $measured === null ? null : SlaSignal::fromPickupPercentile($measured->seconds * 2, 99);
+        }
+    };
+
+    $engine = signalEngine($strategy);
+
+    expect($engine->assessDemand(QueueMetricsFactory::backlogged(10), makeQueueConfig())->slaSignal)
+        ->toEqual(SlaSignal::fromPickupPercentile(96.0, 99))
+        // The workload binding still applies to the override.
+        ->and($strategy->slaSignalFor(makeQueueConfig(['queue' => 'other'])))->toBeNull();
+});
+
 test('a decision from the engine carries the strategy signal', function (): void {
     $this->store->seedRepeated(20, 48.0, 'sqs', 'default');
     $engine = signalEngine(signalHybrid($this->store));
