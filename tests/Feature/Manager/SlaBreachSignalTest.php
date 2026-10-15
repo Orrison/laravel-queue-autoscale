@@ -9,6 +9,7 @@ use Cbox\LaravelQueueAutoscale\Events\SlaBreached;
 use Cbox\LaravelQueueAutoscale\Events\SlaRecovered;
 use Cbox\LaravelQueueAutoscale\Manager\AutoscaleManager;
 use Cbox\LaravelQueueAutoscale\Output\DataTransferObjects\QueueStats;
+use Cbox\LaravelQueueAutoscale\Scaling\QueueMetricsAdapter;
 use Cbox\LaravelQueueAutoscale\Scaling\ScalingEngine;
 use Cbox\LaravelQueueAutoscale\Scaling\SlaSignalSource;
 use Cbox\LaravelQueueAutoscale\Testing\InMemoryPickupTimeStore;
@@ -478,4 +479,43 @@ test('a pinned queue held at the host worker ceiling still reports its breach', 
     Event::assertDispatchedTimes(SlaBreached::class, 1);
     expect(breachQueueStats($manager, 'sqs:ledger')->slaStatus)->toBe('breached')
         ->and($pool->totalCount())->toBe(1);
+});
+
+/**
+ * Discovery reports the connection name as the driver; these go through the
+ * adapter exactly as discovered metrics do.
+ */
+function discoveredBreachMetrics(string $connection, int $pending, int $oldestJobAge): QueueMetricsData
+{
+    return QueueMetricsData::fromArray((new QueueMetricsAdapter)->mapFields([
+        'connection' => $connection,
+        'queue' => 'orders',
+        'driver' => $connection,
+        'depth' => ['total' => $pending, 'pending' => $pending, 'oldest_job_age_seconds' => $oldestJobAge],
+    ]));
+}
+
+test('a breach on a redis connection with a custom name recovers on a real zero age', function (): void {
+    config()->set('queue.connections.redis-high', ['driver' => 'redis']);
+    config()->set('queue-autoscale.queues', ['orders' => breachQueueRules() + ['connection' => 'redis-high']]);
+    $this->pickups->seedRepeated(20, 45.0, 'redis-high', 'orders');
+    evaluateQueueForBreach(discoveredBreachMetrics('redis-high', 200, 10));
+
+    $this->pickups->clear('redis-high', 'orders');
+    evaluateQueueForBreach(discoveredBreachMetrics('redis-high', 3, 0));
+
+    Event::assertDispatchedTimes(SlaRecovered::class, 1);
+});
+
+test('a breach on an sqs connection with a custom name is held through a drained window', function (): void {
+    config()->set('queue.connections.aws', ['driver' => 'sqs']);
+    config()->set('queue-autoscale.queues', ['orders' => breachQueueRules() + ['connection' => 'aws']]);
+    $this->pickups->seedRepeated(20, 45.0, 'aws', 'orders');
+    evaluateQueueForBreach(discoveredBreachMetrics('aws', 200, 0));
+
+    $this->pickups->clear('aws', 'orders');
+    evaluateQueueForBreach(discoveredBreachMetrics('aws', 200, 0));
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertNotDispatched(SlaRecovered::class);
 });

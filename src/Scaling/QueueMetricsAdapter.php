@@ -121,8 +121,10 @@ class QueueMetricsAdapter
         $activeWorkers = Coerce::toInt($workersData['active_count'] ?? 0);
         $utilizationRate = Coerce::toFloat($workersData['current_busy_percent'] ?? 0.0);
 
+        $connection = Coerce::toString($data['connection'] ?? null, AutoscaleConfiguration::defaultConnection());
+
         return [
-            'connection' => Coerce::toString($data['connection'] ?? null, AutoscaleConfiguration::defaultConnection()),
+            'connection' => $connection,
             'queue' => Coerce::toString($data['queue'] ?? null, 'default'),
             'depth' => $depth,
             'pending' => $pending,
@@ -136,7 +138,7 @@ class QueueMetricsAdapter
             'failure_rate' => $failureRate,
             'utilization_rate' => $utilizationRate,
             'active_workers' => $activeWorkers,
-            'driver' => Coerce::toString($data['driver'] ?? null, 'unknown'),
+            'driver' => self::driverOf($connection, Coerce::toString($data['driver'] ?? null, 'unknown')),
             'health' => $healthData,
             'calculated_at' => $data['timestamp'] ?? now()->toIso8601String(),
         ];
@@ -232,9 +234,26 @@ class QueueMetricsAdapter
             'failure_rate' => $failureRate,
             'utilization_rate' => $utilization,
             'active_workers' => $activeWorkers,
-            'driver' => $driver,
+            'driver' => self::driverOf($group->connection, $driver),
             'health' => [],
             'calculated_at' => now()->toIso8601String(),
         ]);
+    }
+
+    /**
+     * The queue driver behind a connection, from the application's queue
+     * config.
+     *
+     * Discovery reports the connection NAME in its `driver` field, so a
+     * connection called `redis-high` or `aws` arrived here as a driver of
+     * that name, and everything keyed on the driver — whether it can report
+     * the oldest job's age, the cluster summary — read it wrong. The reported
+     * value is kept only for a connection the config does not define.
+     */
+    private static function driverOf(string $connection, string $reported): string
+    {
+        $configured = config("queue.connections.{$connection}.driver");
+
+        return is_string($configured) && $configured !== '' ? $configured : $reported;
     }
 }

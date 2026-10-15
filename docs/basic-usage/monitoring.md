@@ -186,8 +186,9 @@ falls back to the oldest job's age. On a driver that cannot report that age the 
 and a stalled queue — which by definition makes no pickups — is exactly the queue whose window
 drains. So while a breach is open, a fallback reading of 0 with jobs still pending holds the breach
 rather than recovering it; once the queue is empty it recovers. This applies only to drivers that
-cannot report the oldest job's age — anything but `redis` and `database`. On those two, an age of 0
-is a real reading (the head job is under a second old) and recovers the breach as usual. A custom
+cannot report the oldest job's age: a connection whose driver (`queue.connections.*.driver`, not
+the connection's name) is anything but `redis` or `database`. On those two, an age of 0 is a real
+reading (the head job is under a second old) and recovers the breach as usual. A custom
 strategy judged on the oldest age (`OldestJobAge`) is not held this way either, so its behaviour is
 unchanged.
 

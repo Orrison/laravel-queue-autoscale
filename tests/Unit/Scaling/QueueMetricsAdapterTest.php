@@ -77,3 +77,29 @@ test('metrics that do not say their connection are read as the application\'s de
 
     expect(QueueMetricsData::fromArray((new QueueMetricsAdapter)->mapFields($payload))->connection)->toBe('redis');
 });
+
+test('the driver is read from the connection config, not the connection name discovery reports', function (string $connection, array $definition, string $reported, string $expected): void {
+    config()->set("queue.connections.{$connection}", $definition);
+
+    $mapped = (new QueueMetricsAdapter)->mapFields(['connection' => $connection, 'driver' => $reported] + adapterDepthPayload(0));
+
+    expect(QueueMetricsData::fromArray($mapped)->driver)->toBe($expected);
+})->with([
+    'redis-high is redis' => ['redis-high', ['driver' => 'redis'], 'redis-high', 'redis'],
+    'aws is sqs' => ['aws', ['driver' => 'sqs'], 'aws', 'sqs'],
+    'an undefined connection keeps what was reported' => ['ghost', [], 'ghost', 'ghost'],
+]);
+
+test('a group takes the driver of its connection, with or without member metrics', function (): void {
+    config()->set('queue.connections.aws', ['driver' => 'sqs']);
+    $group = GroupConfiguration::fromConfig('mail', [
+        'queues' => ['email', 'sms'],
+        'connection' => 'aws',
+    ]);
+    $member = QueueMetricsData::fromArray((new QueueMetricsAdapter)->mapFields(
+        ['connection' => 'aws', 'queue' => 'email', 'driver' => 'aws'] + adapterDepthPayload(0),
+    ));
+
+    expect((new QueueMetricsAdapter)->aggregateGroup($group, ['aws:email' => $member])->driver)->toBe('sqs')
+        ->and((new QueueMetricsAdapter)->aggregateGroup($group, [])->driver)->toBe('sqs');
+});
