@@ -21,7 +21,7 @@ class CustomQueueDriver
      */
     public static function register(string $connection, string $queueClass, string $driver = 'custom'): void
     {
-        $queue = Mockery::mock($queueClass)->makePartial();
+        $queue = Mockery::mock($queueClass, QueueContract::class)->makePartial();
 
         assert($queue instanceof QueueContract);
 
