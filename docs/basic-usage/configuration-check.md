@@ -64,8 +64,8 @@ A cap of `null` or `0` keeps every sample and is never reported.
 samples are the only SLA signal an SQS queue has. A sample needs `pushedAt` stamped on the job and a
 store the workers and the manager share. Without them `SlaBreached` and `SlaRecovered` never fire for
 the queue and the strategy cannot see how long jobs wait. The warning names every queue on an `sqs`
-connection — configured ones, plus discovered ones when the default connection is SQS — and what is
-missing:
+connection — configured ones, and discovered ones that were seen on an `sqs`-driver connection,
+whatever the default connection is — and what is missing:
 
 ```text
 WARN   SQS queues have no SLA signal

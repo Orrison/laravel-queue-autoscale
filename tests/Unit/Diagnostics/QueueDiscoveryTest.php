@@ -64,3 +64,42 @@ test('the connection is read from the key when the payload lacks it', function (
 
     expect($discovery->names())->toBe(['emails']);
 });
+
+test('names on a driver come from the connection each queue was seen on', function (): void {
+    config()->set('queue.connections.sqs', ['driver' => 'sqs']);
+    config()->set('queue.connections.sqs-eu', ['driver' => 'sqs']);
+
+    $discovery = discoveryReading([
+        'sqs:invoices' => ['queue' => 'invoices', 'connection' => 'sqs'],
+        'sqs-eu:reports' => ['queue' => 'reports', 'connection' => 'sqs-eu'],
+        'redis:emails' => ['queue' => 'emails', 'connection' => 'redis'],
+        'sqs:tenant:42' => ['queue' => 'tenant:42', 'connection' => 'sqs'],
+    ]);
+
+    expect($discovery->namesOnDriver('sqs'))->toBe(['invoices', 'reports', 'tenant:42'])
+        ->and($discovery->namesOnDriver('redis'))->toBe(['emails']);
+});
+
+test('names on a driver include configured queues on that driver', function (): void {
+    config()->set('queue.connections.sqs', ['driver' => 'sqs']);
+    config()->set('queue.default', 'redis');
+    config()->set('queue-autoscale.queues', [
+        'orders' => ['connection' => 'sqs'],
+        'emails' => [],
+        'tenant-*' => ['connection' => 'sqs'],
+    ]);
+
+    $discovery = discoveryReading([]);
+
+    expect($discovery->namesOnDriver('sqs'))->toBe(['orders'])
+        ->and($discovery->namesOnDriver('redis'))->toBe(['emails']);
+});
+
+test('an entry whose connection is unknown is on no driver', function (): void {
+    $discovery = discoveryReading([
+        'ghost:jobs' => ['queue' => 'jobs', 'connection' => 'ghost'],
+    ]);
+
+    expect($discovery->namesOnDriver('sqs'))->toBe([])
+        ->and($discovery->names())->toBe(['jobs']);
+});

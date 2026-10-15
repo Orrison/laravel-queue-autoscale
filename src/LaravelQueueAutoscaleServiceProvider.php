@@ -23,6 +23,7 @@ use Cbox\LaravelQueueAutoscale\Contracts\PercentileCalculatorContract;
 use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
 use Cbox\LaravelQueueAutoscale\Contracts\ScalingStrategyContract;
 use Cbox\LaravelQueueAutoscale\Contracts\SpawnLatencyTrackerContract;
+use Cbox\LaravelQueueAutoscale\Diagnostics\QueueDiscovery;
 use Cbox\LaravelQueueAutoscale\Fuse\FailureFuse;
 use Cbox\LaravelQueueAutoscale\Fuse\JobOutcomeRecorder;
 use Cbox\LaravelQueueAutoscale\Manager\AutoscaleManager;
@@ -191,6 +192,10 @@ class LaravelQueueAutoscaleServiceProvider extends ServiceProvider
 
         // Register scaling engine
         $this->app->singleton(ScalingEngine::class);
+
+        // Bound for the same reason: the doctor's optional discovery tells it
+        // which discovered queues are on SQS, and would otherwise be null.
+        $this->app->bind(QueueDiscovery::class);
 
         // Register worker management
         $this->app->singleton(WorkerSpawner::class);

@@ -29,6 +29,12 @@ use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
 class ConfigurationDoctor
 {
     /**
+     * @param  QueueDiscovery|null  $discovery  Tells which discovered queues sit on which driver. Without
+     *                                          it, driver-specific checks only see configured queues.
+     */
+    public function __construct(private ?QueueDiscovery $discovery = null) {}
+
+    /**
      * @param  list<string>  $discoveredQueues  Queue names the metrics package has seen.
      * @return list<Finding>
      */
@@ -46,7 +52,7 @@ class ConfigurationDoctor
                 $this->discoveryWithoutACeiling($discoveredQueues),
                 $this->fifoQueuesAllowingParallelism($discoveredQueues),
                 $this->pickupCapHidingSlaBreaches($discoveredQueues),
-                $this->sqsQueuesWithoutPickupSamples($discoveredQueues),
+                $this->sqsQueuesWithoutPickupSamples(),
                 $this->configurationLeftOverFromV3(),
             ] as $group
         ) {
@@ -400,10 +406,14 @@ class ConfigurationDoctor
      * how long jobs wait. Nothing errors: the queue simply always reads as
      * within its SLA.
      *
-     * @param  list<string>  $discoveredQueues
+     * The queues come from configuration and, when the doctor was given a
+     * discovery, from the queues seen on an SQS connection. A bare discovered
+     * name says nothing about its connection, so it is never assumed to be on
+     * SQS just because the default connection is.
+     *
      * @return list<Finding>
      */
-    private function sqsQueuesWithoutPickupSamples(array $discoveredQueues): array
+    private function sqsQueuesWithoutPickupSamples(): array
     {
         $missing = [];
 
@@ -427,10 +437,8 @@ class ConfigurationDoctor
             }
         }
 
-        if ($this->connectionDriver($this->defaultConnection()) === 'sqs') {
-            foreach ($discoveredQueues as $queue) {
-                $queues[$queue] = true;
-            }
+        foreach ($this->discovery?->namesOnDriver('sqs') ?? [] as $queue) {
+            $queues[$queue] = true;
         }
 
         if ($queues === []) {

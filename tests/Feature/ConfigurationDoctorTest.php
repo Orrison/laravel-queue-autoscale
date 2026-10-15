@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Cbox\LaravelQueueAutoscale\Configuration\Profiles\ConnectionLimitedProfile;
 use Cbox\LaravelQueueAutoscale\Diagnostics\ConfigurationDoctor;
 use Cbox\LaravelQueueAutoscale\Diagnostics\Finding;
+use Cbox\LaravelQueueAutoscale\Diagnostics\QueueDiscovery;
 use Cbox\LaravelQueueAutoscale\Diagnostics\Severity;
 use Cbox\LaravelQueueAutoscale\Testing\InMemoryPickupTimeStore;
 
@@ -423,13 +424,78 @@ test('without an SQS queue the pickup setup is not reported', function (): void 
     expect(findingTitled(diagnose(['emails', 'default']), 'SQS queues have no SLA signal'))->toBeNull();
 });
 
-test('discovered queues count as SQS when the default connection is SQS', function (): void {
+/**
+ * @param  array<string, array<string, mixed>>  $metrics
+ */
+function doctorDiscovering(array $metrics): ConfigurationDoctor
+{
+    return new ConfigurationDoctor(new class($metrics) extends QueueDiscovery
+    {
+        /**
+         * @param  array<string, array<string, mixed>>  $metrics
+         */
+        public function __construct(private array $metrics) {}
+
+        protected function fromMetrics(): array
+        {
+            return $this->metrics;
+        }
+    });
+}
+
+test('discovered queues seen on an SQS connection are reported', function (): void {
     sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
     config()->set('queue-autoscale.queues', []);
-    config()->set('queue.default', 'sqs');
 
-    $finding = findingTitled(diagnose(['invoices', 'reports']), 'SQS queues have no SLA signal');
+    $doctor = doctorDiscovering([
+        'sqs:invoices' => ['connection' => 'sqs', 'queue' => 'invoices'],
+        'sqs:reports' => ['connection' => 'sqs', 'queue' => 'reports'],
+    ]);
+
+    $finding = findingTitled($doctor->diagnose(['invoices', 'reports']), 'SQS queues have no SLA signal');
 
     expect($finding)->not->toBeNull()
         ->and($finding->detail)->toStartWith('invoices, reports: ');
+});
+
+test('discovered queues on other connections are not reported when the default connection is SQS', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+    config()->set('queue.default', 'sqs');
+    config()->set('queue.connections.redis', ['driver' => 'redis']);
+    config()->set('queue.connections.database', ['driver' => 'database']);
+
+    $doctor = doctorDiscovering([
+        'sqs:invoices' => ['connection' => 'sqs', 'queue' => 'invoices'],
+        'redis:emails' => ['connection' => 'redis', 'queue' => 'emails'],
+        'database:reports' => ['connection' => 'database', 'queue' => 'reports'],
+    ]);
+
+    $finding = findingTitled($doctor->diagnose(['invoices', 'emails', 'reports', 'orders']), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toStartWith('orders, invoices: ')
+        ->and($finding->detail)->not->toContain('emails')
+        ->and($finding->detail)->not->toContain('reports');
+});
+
+test('without a discovery only configured SQS queues are reported, whatever the default connection', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+    config()->set('queue.default', 'sqs');
+
+    $finding = findingTitled(diagnose(['invoices', 'emails']), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toStartWith('orders: ')
+        ->and($finding->detail)->not->toContain('invoices');
+});
+
+test('a configured queue without a connection is on SQS when the default connection is', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+    config()->set('queue.default', 'sqs');
+    config()->set('queue-autoscale.queues', ['billing' => ['sla' => ['target_seconds' => 60]]]);
+
+    $finding = findingTitled(diagnose([]), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toStartWith('billing: ');
 });

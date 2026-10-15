@@ -88,3 +88,35 @@ test('a glob is never listed as a discovered queue', function (): void {
         ->expectsOutputToContain('Discovered queues: 1')
         ->assertSuccessful();
 });
+
+test('it reports discovered SQS queues without an SLA signal, and not queues on other drivers', function (): void {
+    config()->set('queue.connections.sqs', ['driver' => 'sqs']);
+    config()->set('queue.connections.redis', ['driver' => 'redis']);
+    config()->set('queue.default', 'sqs');
+    config()->set('queue-autoscale.cluster.enabled', false);
+    config()->set('queue-autoscale.pickup_time.store', 'auto');
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', false);
+
+    app()->instance(QueueDiscovery::class, new class extends QueueDiscovery
+    {
+        protected function fromMetrics(): array
+        {
+            return [
+                'sqs:invoices' => ['queue' => 'invoices', 'connection' => 'sqs'],
+                'redis:emails' => ['queue' => 'emails', 'connection' => 'redis'],
+            ];
+        }
+    });
+
+    $this->artisan('queue:autoscale:doctor')
+        ->expectsOutputToContain('SQS queues have no SLA signal')
+        ->expectsOutputToContain('invoices: jobs are not stamped')
+        ->doesntExpectOutputToContain('emails, invoices')
+        ->doesntExpectOutputToContain('invoices, emails');
+});
+
+test('the container hands the doctor a discovery rather than the null its optional parameter allows', function (): void {
+    // An unbound optional class dependency resolves to its default, so without
+    // the provider's binding the doctor would never see a discovered SQS queue.
+    expect(app()->bound(QueueDiscovery::class))->toBeTrue();
+});
