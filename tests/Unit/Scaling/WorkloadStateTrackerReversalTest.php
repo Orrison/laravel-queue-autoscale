@@ -110,3 +110,14 @@ test('consecutive scale-downs are never damped', function (): void {
 
     expect($this->tracker->holdsReversal('redis:exports', 'down', 60))->toBeFalse();
 });
+
+test('forgetting breaches keeps the cooldown memory', function (): void {
+    $this->tracker->setBreaching('redis:exports', true);
+    $this->tracker->recordScale('redis:exports', 'up');
+
+    $this->tracker->forgetBreaches();
+
+    expect($this->tracker->wasBreaching('redis:exports'))->toBeFalse()
+        ->and($this->tracker->lastDirection('redis:exports'))->toBe('up')
+        ->and($this->tracker->inCooldown('redis:exports', 60))->toBeTrue();
+});

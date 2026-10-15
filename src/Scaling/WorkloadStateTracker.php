@@ -145,6 +145,18 @@ class WorkloadStateTracker
     }
 
     /**
+     * Forget every workload's breach state, keeping cooldown memory.
+     *
+     * For a manager that has just acquired the cluster lease: what it
+     * remembers about breaches is from its own previous lease, and another
+     * leader has been firing the events since.
+     */
+    public function forgetBreaches(): void
+    {
+        $this->breachState = [];
+    }
+
+    /**
      * Forget every workload nothing has been recorded about since the cutoff.
      *
      * Driven by last-seen rather than last-scaled so it bounds a leader too,

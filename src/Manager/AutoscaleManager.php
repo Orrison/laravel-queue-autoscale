@@ -1292,9 +1292,57 @@ class AutoscaleManager
             // lease describe a cluster that no longer exists. The cost of a
             // failover is one undamped cycle.
             $this->cooldown->reset();
+
+            // Breach memory is the same: kept for up to an hour, and from a
+            // lease another leader has been firing the events for since.
+            // Judged against it, a breach that ended in between fired a
+            // second SlaRecovered, and a stale breach held through an
+            // inconclusive reading was published as 'breached' with no
+            // SlaBreached from this leader. The previous leader's summary
+            // says which workloads it left in breach, so the edge carries
+            // over and a breach still open is not announced twice.
+            $this->workloadState->forgetBreaches();
+            $this->adoptBreachStateFromSummary();
         }
 
         $this->wasLeader = $isLeader;
+    }
+
+    /**
+     * Mark every workload the last published cluster summary reports as
+     * breached as breaching here.
+     *
+     * A summary from a leader older than 4.5 carries no `sla_status`; those
+     * workloads are judged the way that leader judged them, on the oldest
+     * job's age against the target.
+     */
+    private function adoptBreachStateFromSummary(): void
+    {
+        $workloads = $this->clusterStore->summary()['workloads'] ?? [];
+
+        if (! is_array($workloads)) {
+            return;
+        }
+
+        foreach ($workloads as $workload) {
+            if (! is_array($workload)) {
+                continue;
+            }
+
+            $breached = array_key_exists('sla_status', $workload)
+                ? $workload['sla_status'] === 'breached'
+                : SlaSignal::fromOldestJobAge(Coerce::toInt($workload['oldest_job_age'] ?? 0))
+                    ->isBreaching(Coerce::toInt($workload['sla_target_seconds'] ?? 0));
+
+            if (! $breached) {
+                continue;
+            }
+
+            $prefix = ($workload['type'] ?? null) === 'group' ? 'group:' : '';
+            $key = $prefix.Coerce::toString($workload['connection'] ?? '').':'.Coerce::toString($workload['name'] ?? '');
+
+            $this->workloadState->setBreaching($key, true);
+        }
     }
 
     /**
