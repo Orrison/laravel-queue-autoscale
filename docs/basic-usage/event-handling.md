@@ -82,7 +82,7 @@ class SlaBreachPredicted
 
 ### `SlaBreached`
 
-Fired **once** when the workload's SLA signal reaches the SLA target — a state transition, not per cycle. The signal is the pickup-time percentile when the SLA window has enough samples and the oldest pending job's age otherwise; see [How breach is decided](monitoring.md#how-breach-is-decided).
+Fired **once** when the workload's SLA signal reaches the SLA target — a state transition, not per cycle. The signal is the pickup-time percentile when the SLA window has enough samples, raised to the oldest pending job's age when that is larger, and the oldest pending job's age otherwise; see [How breach is decided](monitoring.md#how-breach-is-decided).
 
 ```php
 class SlaBreached

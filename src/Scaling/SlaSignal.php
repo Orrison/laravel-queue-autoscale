@@ -64,6 +64,30 @@ readonly class SlaSignal
     }
 
     /**
+     * This signal, or the oldest pending job's age when that is larger.
+     *
+     * The pickup percentile describes jobs that have already been picked up.
+     * The job at the head of the queue has not been, and its age is a lower
+     * bound on a pickup sample that is certain to be recorded later. When the
+     * workers stall, no new samples arrive, so the window keeps the fast
+     * pickups from before the stall and the percentile stays low however long
+     * the backlog waits. Taking the larger of the two means a stalled queue
+     * breaches as soon as its head job crosses the target, as it did before
+     * breach was judged on the percentile, and recovers only when both are
+     * back under it.
+     *
+     * The returned signal names the measurement that decided it.
+     */
+    public function withOldestJobAge(int $oldestJobAge): self
+    {
+        if ($this->source !== SlaSignalSource::PickupPercentile || $oldestJobAge <= $this->seconds) {
+            return $this;
+        }
+
+        return self::fromOldestJobAge($oldestJobAge);
+    }
+
+    /**
      * Whether the signal is at or over the target.
      *
      * Guarded on a non-zero reading because an empty queue reports an oldest

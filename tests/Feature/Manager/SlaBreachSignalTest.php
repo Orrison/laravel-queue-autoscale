@@ -203,22 +203,58 @@ test('an oldest job age of zero on an empty queue is never a breach', function (
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
 });
 
-test('with both signals present the pickup percentile decides, as it does for the strategy', function (): void {
-    // p95 comfortably inside the target, one old straggler at the head of the
-    // queue: the strategy scales on the percentile, so breach does too.
-    $this->pickups->seedRepeated(20, 3.0, 'redis', 'orders');
-    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(10, oldestJobAge: 120, queue: 'orders'));
+test('a stalled queue breaches on its head job while the window still holds fast pickups', function (): void {
+    // Workers hang: no new pickups are recorded, so the window keeps the fast
+    // ones from before the stall and p95 stays low. The job at the head of the
+    // queue is still waiting, and its age is a pickup that will be slower than
+    // the target when it is finally recorded.
+    $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(500, oldestJobAge: 200, queue: 'orders'));
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertDispatched(SlaBreached::class, function (SlaBreached $event): bool {
+        return $event->oldestJobAge === 200
+            && $event->slaSignal?->source === SlaSignalSource::OldestJobAge
+            && $event->slaSignal->seconds === 200.0
+            && $event->signalSeconds() === 200.0;
+    });
+    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('breached');
+});
+
+test('a head job just under the target does not breach a queue whose p95 is fast', function (): void {
+    $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(10, oldestJobAge: 29, queue: 'orders'));
 
     Event::assertNotDispatched(SlaBreached::class);
-    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
+    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('warning');
+});
 
-    // And the other way round: a young head of queue does not hide a p95
-    // that has blown through the target.
-    $this->pickups->seedRepeated(400, 60.0, 'redis', 'orders');
+test('a young head of queue does not hide a p95 that has blown through the target', function (): void {
+    $this->pickups->seedRepeated(20, 60.0, 'redis', 'orders');
     $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(10, oldestJobAge: 2, queue: 'orders'));
 
     Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertDispatched(SlaBreached::class, fn (SlaBreached $event): bool => $event->slaSignal?->source === SlaSignalSource::PickupPercentile);
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('breached');
+});
+
+test('a breach recovers only once both the percentile and the head job are under the target', function (): void {
+    $this->pickups->seedRepeated(20, 60.0, 'redis', 'orders');
+    evaluateQueueForBreach(QueueMetricsFactory::behind(100, oldestJobAge: 70, queue: 'orders'));
+
+    // The slow pickups age out of the window, but the head job is still over.
+    Carbon::setTestNow(now()->addSeconds(301));
+    $this->pickups->seedRepeated(20, 2.0, 'redis', 'orders');
+    evaluateQueueForBreach(QueueMetricsFactory::behind(40, oldestJobAge: 45, queue: 'orders'));
+
+    Event::assertNotDispatched(SlaRecovered::class);
+
+    Carbon::setTestNow(now()->addSeconds(5));
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(5, oldestJobAge: 3, queue: 'orders'));
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertDispatchedTimes(SlaRecovered::class, 1);
+    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
 });
 
 test('the warning band is over 80 percent of the target on the same signal', function (float $p95, string $status): void {

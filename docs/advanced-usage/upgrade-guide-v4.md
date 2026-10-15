@@ -238,11 +238,13 @@ What that changes:
   queue there could never breach. With pickup samples recorded (`QUEUE_AUTOSCALE_STAMP_PUSHED_AT`
   and a Redis pickup store, as in 4.4), `SlaBreached` now fires when the p95 crosses the target.
   Expect alerts on SQS queues that were silently breaching.
-- **On Redis, with samples, the percentile decides.** A single old job no longer opens a breach
-  while the p95 is inside the target, and a p95 over the target opens one even while the head of the
-  queue is young. Queues without enough samples behave exactly as before.
-- **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window drops
-  under the target, which can trail the backlog clearing by up to one `sla.window_seconds`.
+- **On Redis, with samples, a p95 over the target opens a breach** even while the head of the queue
+  is young. A head job at or over the target still opens one too, however fast the p95 is: breach is
+  judged on whichever of the two is further behind (since 4.5.1 — 4.5.0 let the percentile win, so
+  a stalled queue whose window still held fast pickups did not breach until they aged out).
+- **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window and the
+  head job are both under the target, which can trail the backlog clearing by up to one
+  `sla.window_seconds`.
 - **A short window does not end a breach while jobs wait.** An open breach is held when the window
   falls below `sla.min_samples` and the oldest-age fallback reads 0 with jobs still pending.
 

@@ -85,6 +85,12 @@ The events' `oldestJobAge` / `currentJobAge` stay 0 on SQS; read `$event->slaSig
 [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided) for the window and
 recovery semantics.
 
+One limit follows from SQS having no oldest-job age. On Redis and the database driver, a queue
+whose workers stall breaches as soon as the job at its head has waited past the target. SQS cannot
+say how long that job has waited, and a stall records no new pickups, so a breach shows up only
+through the samples recorded before and after it. Alert on `ApproximateAgeOfOldestMessage` in
+CloudWatch as well if you need to catch a stall on SQS.
+
 A sample needs two things:
 
 - **`pushedAt` in the job payload.** Horizon writes it, but Horizon only runs on Redis, so on SQS

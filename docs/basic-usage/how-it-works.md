@@ -119,7 +119,7 @@ Two more details:
 
 The drain calculator's "oldest job age" is a **p95 pickup time** when there are enough samples: the strategy collects `pickup_seconds` samples across the queue (or all member queues of a group) over `sla.window_seconds` and asks the percentile calculator for `sla.percentile`, requiring `sla.min_samples`. If that returns null, it falls back to the raw `oldest_job_age` from the metrics package.
 
-The same number — the **SLA signal** — decides breach. The strategy reports it with the decision, and `SlaBreached`, `SlaRecovered` and the console's breached/warning status are judged on it rather than on the oldest job's age, so a queue on a driver that cannot report that age (Amazon SQS) still breaches when its pickup time does. See [How breach is decided](monitoring.md#how-breach-is-decided).
+The same number — the **SLA signal**, raised to the oldest pending job's age when the head of the queue is further behind — decides breach. The strategy reports it with the decision, and `SlaBreached`, `SlaRecovered` and the console's breached/warning status are judged on it rather than on the oldest job's age alone, so a queue on a driver that cannot report that age (Amazon SQS) still breaches when its pickup time does. See [How breach is decided](monitoring.md#how-breach-is-decided).
 
 #### D. Saturation boost and smoothing
 

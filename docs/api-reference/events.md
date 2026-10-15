@@ -44,7 +44,7 @@ All live in `Cbox\LaravelQueueAutoscale\Events`. See [Event Handling](../basic-u
 | Member | Meaning |
 |---|---|
 | `float $seconds` | The measured wait |
-| `SlaSignalSource $source` | `PickupPercentile` (`'pickup_percentile'`), `OldestJobAgeFallback` (`'oldest_job_age_fallback'`, too few samples) or `OldestJobAge` (`'oldest_job_age'`, a strategy that measures no pickups) |
+| `SlaSignalSource $source` | `PickupPercentile` (`'pickup_percentile'`), `OldestJobAgeFallback` (`'oldest_job_age_fallback'`, too few samples) or `OldestJobAge` (`'oldest_job_age'`, a strategy that measures no pickups, or a head job older than the measured percentile) |
 | `?int $percentile` | The configured `sla.percentile` when the source is `PickupPercentile` |
 | `isBreaching(int $target): bool` | `seconds > 0 && seconds >= $target` |
 | `isWarning(int $target): bool` | Over 80% of the target without breaching |

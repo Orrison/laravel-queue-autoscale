@@ -214,6 +214,29 @@ test('a custom strategy can report its own signal', function (): void {
         ->toEqual(SlaSignal::fromPickupPercentile(77.0, 90));
 });
 
+test('the engine judges on the head job when it is older than the strategy percentile', function (): void {
+    $this->store->seedRepeated(20, 1.0);
+    $strategy = signalHybrid($this->store);
+    $metrics = QueueMetricsFactory::behind(500, oldestJobAge: 200);
+
+    $decision = signalEngine($strategy)->evaluate($metrics, makeQueueConfig(), currentWorkers: 1);
+
+    expect($decision->slaSignal)->toEqual(SlaSignal::fromOldestJobAge(200))
+        ->and(signalEngine($strategy)->assessDemand($metrics, makeQueueConfig())->slaSignal)
+        ->toEqual(SlaSignal::fromOldestJobAge(200))
+        // The strategy itself still reports, and scaled on, its percentile.
+        ->and($strategy->getLastSlaSignal())->toEqual(SlaSignal::fromPickupPercentile(1.0, 95));
+});
+
+test('a pinned workload is judged on the head job when it is older than the percentile', function (): void {
+    $this->store->seedRepeated(20, 1.0);
+
+    $signal = signalEngine(signalHybrid($this->store), $this->store)
+        ->measureSlaSignal(QueueMetricsFactory::behind(10, oldestJobAge: 90), makeQueueConfig());
+
+    expect($signal)->toEqual(SlaSignal::fromOldestJobAge(90));
+});
+
 test('assessDemand returns the same target as evaluateDemand', function (): void {
     $this->store->seedRepeated(20, 48.0);
     $metrics = QueueMetricsFactory::behind(500, oldestJobAge: 40);

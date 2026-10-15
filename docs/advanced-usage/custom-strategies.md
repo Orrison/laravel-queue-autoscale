@@ -414,6 +414,9 @@ Rules the manager relies on:
   the measurement was unavailable. Only that fallback source lets the manager hold an open breach
   through a zero reading with jobs still pending — see
   [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
+- **The head of the queue still counts.** The manager raises your signal to the oldest pending
+  job's age when that is larger, so a stall your measurement cannot see still breaches. Your
+  strategy's own target is unaffected.
 - **Pinned workloads skip the strategy.** For those the manager measures with `SlaSignalResolver`
   directly, so a strategy with its own, different measurement is judged on the shipped one there.
 

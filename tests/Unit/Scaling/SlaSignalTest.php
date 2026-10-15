@@ -79,3 +79,30 @@ test('source values are stable strings for summaries and telemetry', function ()
         ->and(SlaSignalSource::OldestJobAge->value)->toBe('oldest_job_age')
         ->and(SlaSignalSource::OldestJobAgeFallback->value)->toBe('oldest_job_age_fallback');
 });
+
+test('a head job older than the pickup percentile raises the signal to its age', function (): void {
+    $signal = SlaSignal::fromPickupPercentile(1.5, 95)->withOldestJobAge(200);
+
+    expect($signal->source)->toBe(SlaSignalSource::OldestJobAge)
+        ->and($signal->seconds)->toBe(200.0)
+        ->and($signal->percentile)->toBeNull()
+        ->and($signal->isBreaching(30))->toBeTrue();
+});
+
+test('a head job no older than the pickup percentile leaves the percentile in charge', function (int $oldestJobAge): void {
+    $percentile = SlaSignal::fromPickupPercentile(45.0, 95);
+
+    expect($percentile->withOldestJobAge($oldestJobAge))->toBe($percentile);
+})->with([
+    'empty queue' => [0],
+    'younger head' => [12],
+    'equal' => [45],
+]);
+
+test('an oldest-age signal is already the head job and is left as it is', function (): void {
+    $fallback = SlaSignal::fromOldestJobAgeFallback(0);
+    $plain = SlaSignal::fromOldestJobAge(10);
+
+    expect($fallback->withOldestJobAge(0))->toBe($fallback)
+        ->and($plain->withOldestJobAge(10))->toBe($plain);
+});

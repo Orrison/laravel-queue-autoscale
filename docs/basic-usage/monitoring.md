@@ -142,13 +142,14 @@ Event::listen(function (SlaBreached $event) {
 
 ### How breach is decided
 
-A workload is judged on its **SLA signal**: the same number the scaling strategy computed its
-target from, so the breach you are told about and the workers you are given always agree.
+A workload is judged on its **SLA signal**: the number the scaling strategy computed its target
+from, raised to the oldest pending job's age when the head of the queue is older still.
 
 | Situation | Signal | `slaSignal->source` |
 |---|---|---|
 | At least `sla.min_samples` pickup samples in the last `sla.window_seconds` | The `sla.percentile` (default p95) of those pickup times | `SlaSignalSource::PickupPercentile` |
-| Fewer samples than that | The oldest pending job's age | `SlaSignalSource::OldestJobAgeFallback` |
+| Enough samples, but the oldest pending job is older than that percentile | The oldest pending job's age | `SlaSignalSource::OldestJobAge` |
+| Fewer samples than `sla.min_samples` | The oldest pending job's age | `SlaSignalSource::OldestJobAgeFallback` |
 | A custom strategy that does not report a signal | The oldest pending job's age | `SlaSignalSource::OldestJobAge` |
 
 From that signal:
@@ -158,9 +159,17 @@ From that signal:
 - **Warning** (console only) when it is over 80% of the target without reaching it.
 - **OK** otherwise.
 
-The pickup percentile wins whenever it exists, exactly as it does for the strategy: a p95 well
-inside the target is not a breach because one straggler at the head of the queue is old, and a
-young head of queue does not hide a p95 that has blown through the target. Groups pool the samples
+**Whichever is further behind decides.** The percentile describes jobs that have already been
+picked up; the job at the head of the queue has not been, and its age is the least its pickup time
+will be. When workers stall, no new pickups are recorded, so the window keeps the fast pickups from
+before the stall and the percentile stays low however long the backlog waits. Judging on the larger
+of the two means a stalled queue breaches as soon as its head job crosses the target, and a young
+head of queue does not hide a percentile that has blown through it. A breach recovers only when
+both are back under the target.
+
+The strategy still scales on the percentile when it has one; only breach and the reported signal
+take the larger of the two. On Amazon SQS the oldest age is always 0, so the percentile alone
+decides there. Groups pool the samples
 of every member queue. Pinned (`workers.scalable: false`) queues never run the strategy, so the
 manager measures their signal directly, the same way.
 
