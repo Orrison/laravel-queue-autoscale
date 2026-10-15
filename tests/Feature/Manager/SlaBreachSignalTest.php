@@ -160,7 +160,10 @@ test('a breach is not ended by the pickup window running short of samples while 
     $manager = evaluateQueueForBreach(QueueMetricsFactory::onSqs(240, 'orders'));
 
     Event::assertNotDispatched(SlaRecovered::class);
-    expect(breachQueueStats($manager, 'sqs:orders')->slaStatus)->toBe('breached');
+    expect(breachQueueStats($manager, 'sqs:orders'))
+        ->slaStatus->toBe('breached')
+        ->isBreachHeld()->toBeTrue()
+        ->slaReading()->toBe('oldest_age=0s');
 
     // Slow pickups return: still the same breach, not a new one.
     $this->pickups->seedRepeated(20, 50.0, 'sqs', 'orders');

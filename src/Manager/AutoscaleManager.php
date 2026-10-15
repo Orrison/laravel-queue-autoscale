@@ -1729,7 +1729,7 @@ class AutoscaleManager
         $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 SLA BREACH: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
+            $this->verbose('  🚨 '.$this->describeBreach('SLA BREACH', $slaSignal, $config->sla->targetSeconds), 'error');
         }
 
         // 5. Anti-flapping check: hold a scale-DOWN that reverses a recent
@@ -1815,6 +1815,7 @@ class AutoscaleManager
             targetWorkers: $decision->targetWorkers,
             reserved: $metrics->reserved,
             scheduled: $metrics->scheduled,
+            slaSignal: $slaSignal,
         );
 
         // 7-9. Consult the policies, act on what they return, tell them what
@@ -1883,7 +1884,7 @@ class AutoscaleManager
         $isBreaching = $this->isInBreach($key, $slaSignal, $group->sla->targetSeconds, $aggregated);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 GROUP SLA BREACH: {$slaSignal->describe()} >= SLA={$group->sla->targetSeconds}s", 'error');
+            $this->verbose('  🚨 '.$this->describeBreach('GROUP SLA BREACH', $slaSignal, $group->sla->targetSeconds), 'error');
         }
 
         // Anti-flapping check (same semantics as per-queue).
@@ -1917,6 +1918,7 @@ class AutoscaleManager
             targetWorkers: $decision->targetWorkers,
             reserved: $aggregated->reserved,
             scheduled: $aggregated->scheduled,
+            slaSignal: $slaSignal,
         );
 
         $finalDecision = $this->applyDecision(
@@ -1997,7 +1999,7 @@ class AutoscaleManager
             : $slaSignal->isBreaching($config->sla->targetSeconds);
 
         if ($isBreaching) {
-            $this->verbose("  🚨 SLA BREACH on pinned queue: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
+            $this->verbose('  🚨 '.$this->describeBreach('SLA BREACH on pinned queue', $slaSignal, $config->sla->targetSeconds), 'error');
         }
 
         // Keep queue stats fresh so the renderer shows pinned queues too.
@@ -2015,6 +2017,7 @@ class AutoscaleManager
             targetWorkers: $target,
             reserved: $metrics->reserved,
             scheduled: $metrics->scheduled,
+            slaSignal: $slaSignal,
         );
 
         // Fire SLA events even though we can't scale — operators need to know.
@@ -2138,6 +2141,18 @@ class AutoscaleManager
 
         return $this->workloadState->wasBreaching($breachKey)
             && $slaSignal->isInconclusive($metrics->pending, SlaSignal::driverReportsOldestJobAge($metrics->driver));
+    }
+
+    /**
+     * The verbose line for a workload in breach. A breach held open through
+     * an inconclusive reading says so, rather than claiming a reading of 0
+     * is over the target.
+     */
+    private function describeBreach(string $label, SlaSignal $slaSignal, int $slaTarget): string
+    {
+        return $slaSignal->isBreaching($slaTarget)
+            ? "{$label}: {$slaSignal->describe()} >= SLA={$slaTarget}s"
+            : "{$label} held (inconclusive): {$slaSignal->describe()}, SLA={$slaTarget}s";
     }
 
     /**

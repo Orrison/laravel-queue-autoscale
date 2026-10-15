@@ -54,11 +54,20 @@ class VerboseOutputRenderer implements OutputRendererContract
             'debug'
         );
 
-        if ($stats->isBreaching()) {
+        if ($stats->isBreachHeld()) {
             $this->writeln(
                 sprintf(
-                    '  SLA BREACH: oldest_age=%ds >= SLA=%ds',
-                    $stats->oldestJobAge,
+                    '  SLA BREACH held (inconclusive): %s, SLA=%ds',
+                    $stats->slaReading(),
+                    $stats->slaTarget
+                ),
+                'error'
+            );
+        } elseif ($stats->isBreaching()) {
+            $this->writeln(
+                sprintf(
+                    '  SLA BREACH: %s >= SLA=%ds',
+                    $stats->slaReading(),
                     $stats->slaTarget
                 ),
                 'error'
@@ -66,8 +75,8 @@ class VerboseOutputRenderer implements OutputRendererContract
         } elseif ($stats->isWarning()) {
             $this->writeln(
                 sprintf(
-                    '  SLA WARNING: oldest_age=%ds approaching SLA=%ds',
-                    $stats->oldestJobAge,
+                    '  SLA WARNING: %s approaching SLA=%ds',
+                    $stats->slaReading(),
                     $stats->slaTarget
                 ),
                 'warn'
