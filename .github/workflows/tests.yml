@@ -61,6 +61,10 @@ jobs:
 
       - name: Execute tests
         run: vendor/bin/pest --coverage --coverage-clover=coverage.xml --min=50 --exclude-group=simulation
+        env:
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          REDIS_AVAILABLE: true
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

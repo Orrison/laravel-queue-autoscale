@@ -81,6 +81,10 @@ jobs:
       - name: Run simulation suite
         if: matrix.php == '8.4' && matrix.laravel == '13.*' && matrix.stability == 'prefer-stable'
         run: vendor/bin/pest --ci --group=simulation
+        env:
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          REDIS_AVAILABLE: true
 
   # The redis group covers the cluster-safety paths (keyless ping, multi-key
   # EVALs). The matrix above already runs it against a single node as the
