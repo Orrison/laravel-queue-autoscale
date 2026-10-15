@@ -9,7 +9,7 @@ namespace Cbox\LaravelQueueAutoscale\Scaling;
  *
  * The distinction between the two oldest-age cases matters. OldestJobAge is
  * a real reading of the head of the queue: from a strategy that never measures
- * pickup times, or a head job already older than the measured percentile.
+ * pickup times, or the head job's wait on a queue whose pickups have stalled.
  * OldestJobAgeFallback is a strategy that does measure them but had fewer
  * than `sla.min_samples` in the window this cycle — the age is standing in
  * for a percentile it could not compute, which is why a zero reading from it
@@ -23,7 +23,7 @@ enum SlaSignalSource: string
 
     /**
      * The oldest pending job's age: from a strategy that does not measure
-     * pickup times, or a head of queue older than the measured percentile.
+     * pickup times, or the head job's wait on a queue whose pickups have stalled.
      */
     case OldestJobAge = 'oldest_job_age';
 

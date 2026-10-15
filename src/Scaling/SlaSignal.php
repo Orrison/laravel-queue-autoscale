@@ -30,11 +30,13 @@ readonly class SlaSignal
      * @param  float  $seconds  The measured wait, in seconds.
      * @param  SlaSignalSource  $source  Which measurement produced it.
      * @param  int|null  $percentile  The percentile measured, when the source is PickupPercentile.
+     * @param  float|null  $secondsSinceLastPickup  How long ago the newest pickup in the window was recorded, when the source is PickupPercentile.
      */
     public function __construct(
         public float $seconds = 0.0,
         public SlaSignalSource $source = SlaSignalSource::OldestJobAge,
         public ?int $percentile = null,
+        public ?float $secondsSinceLastPickup = null,
     ) {}
 
     /**
@@ -58,33 +60,48 @@ readonly class SlaSignal
     /**
      * A pickup-time percentile measured over the SLA window.
      */
-    public static function fromPickupPercentile(float $seconds, int $percentile): self
+    public static function fromPickupPercentile(float $seconds, int $percentile, ?float $secondsSinceLastPickup = null): self
     {
-        return new self($seconds, SlaSignalSource::PickupPercentile, $percentile);
+        return new self($seconds, SlaSignalSource::PickupPercentile, $percentile, $secondsSinceLastPickup);
     }
 
     /**
-     * This signal, or the oldest pending job's age when that is larger.
+     * This signal, or the head job's wait when the pickup window shows the
+     * queue has stalled.
      *
      * The pickup percentile describes jobs that have already been picked up.
-     * The job at the head of the queue has not been, and its age is a lower
-     * bound on a pickup sample that is certain to be recorded later. When the
-     * workers stall, no new samples arrive, so the window keeps the fast
-     * pickups from before the stall and the percentile stays low however long
-     * the backlog waits. Taking the larger of the two means a stalled queue
-     * breaches as soon as its head job crosses the target, as it did before
-     * breach was judged on the percentile, and recovers only when both are
-     * back under it.
+     * When the workers stall, no new samples arrive, so the window keeps the
+     * fast pickups from before the stall and the percentile stays low however
+     * long the backlog waits. The oldest job's age cannot simply override it:
+     * Redis reports that age from the payload's `createdAt`, set at dispatch,
+     * so a delayed job, a released retry or a `retry_after` redelivery reaches
+     * the head already "old" on a perfectly healthy queue.
      *
-     * The returned signal names the measurement that decided it.
+     * The age is used only with evidence of a stall: jobs pending, and no
+     * pickup recorded for at least the SLA target. On a healthy queue workers
+     * keep recording pickups, so a delayed or retried head never raises the
+     * signal. The wait reported is the smaller of the head job's age and the
+     * time since the last pickup — neither alone is trustworthy, and either
+     * crossing the target with the other means a job has waited that long or
+     * nobody has been served for that long.
+     *
+     * Only a percentile measured by the shipped resolver carries the time
+     * since the last pickup, so any other signal is returned unchanged.
      */
-    public function withOldestJobAge(int $oldestJobAge): self
+    public function withStallEvidence(int $oldestJobAge, int $pending, int $slaTargetSeconds): self
     {
-        if ($this->source !== SlaSignalSource::PickupPercentile || $oldestJobAge <= $this->seconds) {
+        if ($this->source !== SlaSignalSource::PickupPercentile
+            || $this->secondsSinceLastPickup === null
+            || $pending <= 0
+            || $this->secondsSinceLastPickup < $slaTargetSeconds) {
             return $this;
         }
 
-        return self::fromOldestJobAge($oldestJobAge);
+        $waited = min((float) $oldestJobAge, $this->secondsSinceLastPickup);
+
+        return $waited > $this->seconds
+            ? new self($waited, SlaSignalSource::OldestJobAge)
+            : $this;
     }
 
     /**

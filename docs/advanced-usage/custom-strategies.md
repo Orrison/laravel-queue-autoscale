@@ -414,9 +414,10 @@ Rules the manager relies on:
   the measurement was unavailable. Only that fallback source lets the manager hold an open breach
   through a zero reading with jobs still pending, on a driver that cannot report the age — see
   [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
-- **The head of the queue still counts.** The manager raises your signal to the oldest pending
-  job's age when that is larger, so a stall your measurement cannot see still breaches. Your
-  strategy's own target is unaffected.
+- **A stall is caught only for the shipped measurement.** The manager raises a pickup percentile
+  to the head job's wait when no pickup has been recorded for the target. That needs
+  `secondsSinceLastPickup`, which `SlaSignalResolver` fills in; pass it as the third argument of
+  `fromPickupPercentile()` if your measurement knows it. Your strategy's own target is unaffected.
 - **Subclassing `HybridStrategy` is safe.** The manager asks it for the signal of the workload it
   is judging (`slaSignalFor()`), so an override of `calculateTargetWorkers()` that answers some
   queues without calling `parent::` judges those queues on the oldest job's age, not on the signal

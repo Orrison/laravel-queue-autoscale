@@ -86,9 +86,9 @@ The events' `oldestJobAge` / `currentJobAge` stay 0 on SQS; read `$event->slaSig
 recovery semantics.
 
 One limit follows from SQS having no oldest-job age. On Redis and the database driver, a queue
-whose workers stall breaches as soon as the job at its head has waited past the target. SQS cannot
-say how long that job has waited, and a stall records no new pickups, so a breach shows up only
-through the samples recorded before and after it. Alert on `ApproximateAgeOfOldestMessage` in
+whose workers stall breaches about one SLA target after its last pickup, judged on how long the job
+at its head has waited. SQS cannot say how long that job has waited, and a stall records no new
+pickups, so a breach shows up only through the samples recorded before and after it. Alert on `ApproximateAgeOfOldestMessage` in
 CloudWatch as well if you need to catch a stall on SQS.
 
 A sample needs two things, and `queue:autoscale:doctor` warns about every SQS queue missing either

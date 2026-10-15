@@ -44,11 +44,14 @@ All live in `Cbox\LaravelQueueAutoscale\Events`. See [Event Handling](../basic-u
 | Member | Meaning |
 |---|---|
 | `float $seconds` | The measured wait |
-| `SlaSignalSource $source` | `PickupPercentile` (`'pickup_percentile'`), `OldestJobAgeFallback` (`'oldest_job_age_fallback'`, too few samples) or `OldestJobAge` (`'oldest_job_age'`, a strategy that measures no pickups, or a head job older than the measured percentile) |
+| `SlaSignalSource $source` | `PickupPercentile` (`'pickup_percentile'`), `OldestJobAgeFallback` (`'oldest_job_age_fallback'`, too few samples) or `OldestJobAge` (`'oldest_job_age'`, a strategy that measures no pickups, or the head job's wait on a stalled queue) |
 | `?int $percentile` | The configured `sla.percentile` when the source is `PickupPercentile` |
+| `?float $secondsSinceLastPickup` | How long ago the newest pickup in the window was, when the source is `PickupPercentile` |
 | `isBreaching(int $target): bool` | `seconds > 0 && seconds >= $target` |
 | `isWarning(int $target): bool` | Over 80% of the target without breaching |
-| `isInconclusive(int $pending): bool` | A fallback reading of 0 with jobs pending; holds an open breach |
+| `isInconclusive(int $pending, bool $driverReportsOldestJobAge = false): bool` | A fallback reading of 0 with jobs pending, on a driver that cannot report the oldest job's age; holds an open breach |
+| `withStallEvidence(int $oldestJobAge, int $pending, int $slaTargetSeconds): SlaSignal` | The head job's wait when no pickup has been recorded for the target while jobs wait; otherwise the signal unchanged |
+| `SlaSignal::driverReportsOldestJobAge(string $driver): bool` | `true` for `redis` and `database` |
 | `describe(): string` | `p95 pickup=42.0s` or `oldest_age=42s` |
 
 See [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).

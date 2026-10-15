@@ -143,12 +143,12 @@ Event::listen(function (SlaBreached $event) {
 ### How breach is decided
 
 A workload is judged on its **SLA signal**: the number the scaling strategy computed its target
-from, raised to the oldest pending job's age when the head of the queue is older still.
+from, raised to the head job's wait when the pickup window shows the queue has stalled.
 
 | Situation | Signal | `slaSignal->source` |
 |---|---|---|
 | At least `sla.min_samples` pickup samples in the last `sla.window_seconds` | The `sla.percentile` (default p95) of those pickup times | `SlaSignalSource::PickupPercentile` |
-| Enough samples, but the oldest pending job is older than that percentile | The oldest pending job's age | `SlaSignalSource::OldestJobAge` |
+| Enough samples, but no pickup for at least `sla.target_seconds` while jobs are pending (a stall) | The smaller of the oldest job's age and the time since the last pickup | `SlaSignalSource::OldestJobAge` |
 | Fewer samples than `sla.min_samples` | The oldest pending job's age | `SlaSignalSource::OldestJobAgeFallback` |
 | A custom strategy that does not report a signal | The oldest pending job's age | `SlaSignalSource::OldestJobAge` |
 
@@ -159,17 +159,27 @@ From that signal:
 - **Warning** (console only) when it is over 80% of the target without reaching it.
 - **OK** otherwise.
 
-**Whichever is further behind decides.** The percentile describes jobs that have already been
-picked up; the job at the head of the queue has not been, and its age is the least its pickup time
-will be. When workers stall, no new pickups are recorded, so the window keeps the fast pickups from
-before the stall and the percentile stays low however long the backlog waits. Judging on the larger
-of the two means a stalled queue breaches as soon as its head job crosses the target, and a young
-head of queue does not hide a percentile that has blown through it. A breach recovers only when
-both are back under the target.
+**A stall is caught from the window going quiet.** The percentile describes jobs that have already
+been picked up. When workers stall, no new pickups are recorded, so the window keeps the fast
+pickups from before the stall and the percentile stays low however long the backlog waits.
+
+The oldest job's age cannot simply override the percentile. On Redis it is measured from the job's
+`createdAt`, set at dispatch, so a `->delay(300)` job, a released retry waiting out its backoff, or
+a job redelivered after `retry_after` reaches the head of the queue already "old" on a perfectly
+healthy queue. So the age is only used with evidence of a stall: jobs pending, and no pickup
+recorded for at least `sla.target_seconds`. The signal is then the smaller of the head job's age and
+the time since the last pickup, so a stalled queue breaches about one target after its last pickup.
+On a queue whose workers keep picking up jobs, a delayed or retried job at the head never raises the
+signal.
+
+On a quiet queue — no pickup for longer than the target — a delayed or retried job that has just
+become due can read as a breach until a worker picks it up, normally within one poll
+(`workers.sleep_seconds`). A breach recovers once pickups resume and the percentile is under the
+target.
 
 The strategy still scales on the percentile when it has one; only breach and the reported signal
-take the larger of the two. On Amazon SQS the oldest age is always 0, so the percentile alone
-decides there. Groups pool the samples
+use the stall reading. On Amazon SQS the oldest age is always 0, so the percentile alone decides
+there. Groups pool the samples
 of every member queue. Pinned (`workers.scalable: false`) queues never run the strategy, so the
 manager measures their signal directly, the same way.
 

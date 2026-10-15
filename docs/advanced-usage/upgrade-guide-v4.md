@@ -239,12 +239,11 @@ What that changes:
   and a Redis pickup store, as in 4.4), `SlaBreached` now fires when the p95 crosses the target.
   Expect alerts on SQS queues that were silently breaching.
 - **On Redis, with samples, a p95 over the target opens a breach** even while the head of the queue
-  is young. A head job at or over the target still opens one too, however fast the p95 is: breach is
-  judged on whichever of the two is further behind (since 4.6.0 — 4.5.0 let the percentile win, so
-  a stalled queue whose window still held fast pickups did not breach until they aged out).
-- **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window and the
-  head job are both under the target, which can trail the backlog clearing by up to one
-  `sla.window_seconds`.
+  is young, and an old head job alone does not — on Redis a delayed or retried job is aged from
+  dispatch. A stall still breaches: since 4.6.0, when no pickup has been recorded for the target
+  while jobs wait, the head job's wait counts (4.5.0 missed a stall until the fast samples aged out).
+- **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window drops
+  under the target, which can trail the backlog clearing by up to one `sla.window_seconds`.
 - **A short window does not end a breach while jobs wait.** On a driver that cannot report the
   oldest job's age (SQS), an open breach is held when the window falls below `sla.min_samples` and
   the oldest-age fallback reads 0 with jobs still pending. On Redis and the database a 0 is a real
@@ -288,10 +287,13 @@ composer require cboxdk/laravel-queue-autoscale:^4.6
 Restart every `queue:autoscale` process. Nothing in the config file changes. 4.6 corrects how 4.5
 judged breach and adds a doctor check:
 
-- **A stalled queue breaches again.** Breach is judged on the larger of the pickup percentile and
-  the oldest job's age, so a head job at or over the target opens a breach even while the window
-  still holds fast pickups from before the stall. Recovery needs both under the target. Scaling is
-  unchanged.
+- **A stalled queue breaches again.** When no pickup has been recorded for `sla.target_seconds`
+  while jobs wait, breach is judged on the head job's wait (the smaller of its age and the time since
+  the last pickup), even though the window still holds fast pickups from before the stall. On a
+  queue whose pickups keep arriving, an old head job — a delayed job or a retry, which Redis ages
+  from dispatch — does not open a breach. Scaling is unchanged.
+- **Discovered queues on a custom-named connection** (`redis-high`, `aws`) are recognised by their
+  driver, not their connection name, for the rule below and in the cluster summary's `driver`.
 - **A zero age is only "unknown" on SQS.** A breach is held through a short window only on drivers
   that cannot report the oldest job's age. On Redis and the database it recovers as usual.
 - **Pinned queues in a cluster** fire one `SlaBreached` / `SlaRecovered` per cluster, from the

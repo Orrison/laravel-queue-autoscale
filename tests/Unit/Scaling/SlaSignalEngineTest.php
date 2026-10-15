@@ -269,27 +269,43 @@ test('a custom strategy can report its own signal', function (): void {
         ->toEqual(SlaSignal::fromPickupPercentile(77.0, 90));
 });
 
-test('the engine judges on the head job when it is older than the strategy percentile', function (): void {
+test('the engine judges a stalled queue on its head job', function (): void {
     $this->store->seedRepeated(20, 1.0);
     $strategy = signalHybrid($this->store);
+
+    // No pickup for 45s against a 30s target, with jobs waiting.
+    Carbon::setTestNow(now()->addSeconds(45));
     $metrics = QueueMetricsFactory::behind(500, oldestJobAge: 200);
 
     $decision = signalEngine($strategy)->evaluate($metrics, makeQueueConfig(), currentWorkers: 1);
 
-    expect($decision->slaSignal)->toEqual(SlaSignal::fromOldestJobAge(200))
+    expect($decision->slaSignal)->toEqual(SlaSignal::fromOldestJobAge(45))
         ->and(signalEngine($strategy)->assessDemand($metrics, makeQueueConfig())->slaSignal)
-        ->toEqual(SlaSignal::fromOldestJobAge(200))
+        ->toEqual(SlaSignal::fromOldestJobAge(45))
         // The strategy itself still reports, and scaled on, its percentile.
-        ->and($strategy->getLastSlaSignal())->toEqual(SlaSignal::fromPickupPercentile(1.0, 95));
+        ->and($strategy->getLastSlaSignal()?->source)->toBe(SlaSignalSource::PickupPercentile);
 });
 
-test('a pinned workload is judged on the head job when it is older than the percentile', function (): void {
+test('the engine ignores an old head on a queue whose pickups keep arriving', function (): void {
     $this->store->seedRepeated(20, 1.0);
+    Carbon::setTestNow(now()->addSeconds(5));
+
+    $signal = signalEngine(signalHybrid($this->store))
+        ->assessDemand(QueueMetricsFactory::behind(10, oldestJobAge: 300), makeQueueConfig())->slaSignal;
+
+    expect($signal->source)->toBe(SlaSignalSource::PickupPercentile)
+        ->and($signal->seconds)->toBe(1.0)
+        ->and($signal->secondsSinceLastPickup)->toBe(5.0);
+});
+
+test('a stalled pinned workload is judged on its head job', function (): void {
+    $this->store->seedRepeated(20, 1.0);
+    Carbon::setTestNow(now()->addSeconds(60));
 
     $signal = signalEngine(signalHybrid($this->store), $this->store)
         ->measureSlaSignal(QueueMetricsFactory::behind(10, oldestJobAge: 90), makeQueueConfig());
 
-    expect($signal)->toEqual(SlaSignal::fromOldestJobAge(90));
+    expect($signal)->toEqual(SlaSignal::fromOldestJobAge(60));
 });
 
 test('assessDemand returns the same target as evaluateDemand', function (): void {

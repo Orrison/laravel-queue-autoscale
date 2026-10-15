@@ -206,7 +206,8 @@ readonly class ScalingEngine
     public function measureSlaSignal(QueueMetricsData $metrics, QueueConfiguration $config): SlaSignal
     {
         if ($this->strategy instanceof SlaSignalStrategy && $this->slaSignals !== null) {
-            return $this->slaSignals->resolve($metrics, $config)->withOldestJobAge($metrics->oldestJobAge);
+            return $this->slaSignals->resolve($metrics, $config)
+                ->withStallEvidence($metrics->oldestJobAge, $metrics->pending, $config->sla->targetSeconds);
         }
 
         return SlaSignal::fromOldestJobAge($metrics->oldestJobAge);
@@ -216,10 +217,9 @@ readonly class ScalingEngine
      * What the strategy reported for the calculation it just made, or the
      * oldest job's age when it reports nothing.
      *
-     * Raised to the oldest job's age when that is larger, so breach is judged
-     * on whichever of the two is further behind; see
-     * SlaSignal::withOldestJobAge(). The strategy still scales on the signal
-     * it computed.
+     * Raised to the head job's wait when the pickup window shows the queue
+     * has stalled; see SlaSignal::withStallEvidence(). The strategy still
+     * scales on the signal it computed.
      *
      * The shipped strategy is asked for the signal of this workload rather
      * than its last one, so a subclass that answers some workloads without
@@ -235,7 +235,7 @@ readonly class ScalingEngine
         };
 
         return ($reported ?? SlaSignal::fromOldestJobAge($metrics->oldestJobAge))
-            ->withOldestJobAge($metrics->oldestJobAge);
+            ->withStallEvidence($metrics->oldestJobAge, $metrics->pending, $config->sla->targetSeconds);
     }
 
     /**

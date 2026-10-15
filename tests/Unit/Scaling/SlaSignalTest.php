@@ -96,29 +96,42 @@ test('source values are stable strings for summaries and telemetry', function ()
         ->and(SlaSignalSource::OldestJobAgeFallback->value)->toBe('oldest_job_age_fallback');
 });
 
-test('a head job older than the pickup percentile raises the signal to its age', function (): void {
-    $signal = SlaSignal::fromPickupPercentile(1.5, 95)->withOldestJobAge(200);
+test('a stalled window raises the percentile to the head job wait', function (): void {
+    // Nobody picked anything up for 40s while jobs wait; the head job is 35s old.
+    $signal = SlaSignal::fromPickupPercentile(1.5, 95, secondsSinceLastPickup: 40.0)
+        ->withStallEvidence(oldestJobAge: 35, pending: 10, slaTargetSeconds: 30);
 
     expect($signal->source)->toBe(SlaSignalSource::OldestJobAge)
-        ->and($signal->seconds)->toBe(200.0)
+        ->and($signal->seconds)->toBe(35.0)
         ->and($signal->percentile)->toBeNull()
         ->and($signal->isBreaching(30))->toBeTrue();
 });
 
-test('a head job no older than the pickup percentile leaves the percentile in charge', function (int $oldestJobAge): void {
-    $percentile = SlaSignal::fromPickupPercentile(45.0, 95);
+test('a head job aged by its delay is capped at the time since the last pickup', function (): void {
+    // Redis ages the head from dispatch: a 300s delay reads as 300s of waiting.
+    $signal = SlaSignal::fromPickupPercentile(1.5, 95, secondsSinceLastPickup: 31.0)
+        ->withStallEvidence(oldestJobAge: 300, pending: 4, slaTargetSeconds: 30);
 
-    expect($percentile->withOldestJobAge($oldestJobAge))->toBe($percentile);
+    expect($signal->seconds)->toBe(31.0)
+        ->and($signal->source)->toBe(SlaSignalSource::OldestJobAge);
+});
+
+test('without evidence of a stall the percentile stands', function (?float $sinceLastPickup, int $oldestJobAge, int $pending): void {
+    $percentile = SlaSignal::fromPickupPercentile(2.0, 95, $sinceLastPickup);
+
+    expect($percentile->withStallEvidence($oldestJobAge, $pending, slaTargetSeconds: 30))->toBe($percentile);
 })->with([
-    'empty queue' => [0],
-    'younger head' => [12],
-    'equal' => [45],
+    'pickups still arriving, delayed head' => [5.0, 400, 10],
+    'pickups stopped just under the target' => [29.9, 400, 10],
+    'nothing pending' => [120.0, 0, 0],
+    'head no older than the percentile' => [120.0, 2, 10],
+    'no last-pickup time (custom strategy)' => [null, 400, 10],
 ]);
 
-test('an oldest-age signal is already the head job and is left as it is', function (): void {
+test('only a pickup percentile is raised by stall evidence', function (): void {
     $fallback = SlaSignal::fromOldestJobAgeFallback(0);
     $plain = SlaSignal::fromOldestJobAge(10);
 
-    expect($fallback->withOldestJobAge(0))->toBe($fallback)
-        ->and($plain->withOldestJobAge(10))->toBe($plain);
+    expect($fallback->withStallEvidence(400, 10, 30))->toBe($fallback)
+        ->and($plain->withStallEvidence(400, 10, 30))->toBe($plain);
 });

@@ -241,31 +241,47 @@ test('an oldest job age of zero on an empty queue is never a breach', function (
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
 });
 
-test('a stalled queue breaches on its head job while the window still holds fast pickups', function (): void {
+test('a stalled queue breaches once nobody has been picked up for the target', function (): void {
     // Workers hang: no new pickups are recorded, so the window keeps the fast
-    // ones from before the stall and p95 stays low. The job at the head of the
-    // queue is still waiting, and its age is a pickup that will be slower than
-    // the target when it is finally recorded.
+    // ones from before the stall and p95 stays low.
     $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
-    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(500, oldestJobAge: 200, queue: 'orders'));
+
+    Carbon::setTestNow(now()->addSeconds(20));
+    evaluateQueueForBreach(QueueMetricsFactory::behind(500, oldestJobAge: 200, queue: 'orders'));
+    Event::assertNotDispatched(SlaBreached::class);
+
+    Carbon::setTestNow(now()->addSeconds(15));
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(500, oldestJobAge: 215, queue: 'orders'));
 
     Event::assertDispatchedTimes(SlaBreached::class, 1);
     Event::assertDispatched(SlaBreached::class, function (SlaBreached $event): bool {
-        return $event->oldestJobAge === 200
+        return $event->oldestJobAge === 215
             && $event->slaSignal?->source === SlaSignalSource::OldestJobAge
-            && $event->slaSignal->seconds === 200.0
-            && $event->signalSeconds() === 200.0;
+            && $event->slaSignal->seconds === 35.0;
     });
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('breached');
 });
 
-test('a head job just under the target does not breach a queue whose p95 is fast', function (): void {
+test('a delayed or retried head job on a healthy queue is not a breach', function (int $oldestJobAge): void {
+    // Redis ages the head from dispatch, so a ->delay(300) job, a released
+    // retry or a retry_after redelivery arrives "old". Pickups keep arriving,
+    // so it says nothing about how long jobs wait.
     $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
-    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(10, oldestJobAge: 29, queue: 'orders'));
+
+    foreach ([5, 5, 5] as $seconds) {
+        Carbon::setTestNow(now()->addSeconds($seconds));
+        $this->pickups->seedRepeated(2, 1.0, 'redis', 'orders');
+        $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(3, oldestJobAge: $oldestJobAge, queue: 'orders'));
+    }
 
     Event::assertNotDispatched(SlaBreached::class);
-    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('warning');
-});
+    Event::assertNotDispatched(SlaRecovered::class);
+    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
+})->with([
+    'a 300s delay' => [300],
+    'a 60s backoff retry' => [65],
+    'a retry_after redelivery' => [95],
+]);
 
 test('a young head of queue does not hide a p95 that has blown through the target', function (): void {
     $this->pickups->seedRepeated(20, 60.0, 'redis', 'orders');
@@ -276,21 +292,18 @@ test('a young head of queue does not hide a p95 that has blown through the targe
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('breached');
 });
 
-test('a breach recovers only once both the percentile and the head job are under the target', function (): void {
-    $this->pickups->seedRepeated(20, 60.0, 'redis', 'orders');
-    evaluateQueueForBreach(QueueMetricsFactory::behind(100, oldestJobAge: 70, queue: 'orders'));
-
-    // The slow pickups age out of the window, but the head job is still over.
-    Carbon::setTestNow(now()->addSeconds(301));
-    $this->pickups->seedRepeated(20, 2.0, 'redis', 'orders');
-    evaluateQueueForBreach(QueueMetricsFactory::behind(40, oldestJobAge: 45, queue: 'orders'));
-
-    Event::assertNotDispatched(SlaRecovered::class);
-
-    Carbon::setTestNow(now()->addSeconds(5));
-    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(5, oldestJobAge: 3, queue: 'orders'));
+test('a stall breach recovers once pickups resume, even with an old head', function (): void {
+    $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
+    Carbon::setTestNow(now()->addSeconds(40));
+    evaluateQueueForBreach(QueueMetricsFactory::behind(500, oldestJobAge: 200, queue: 'orders'));
 
     Event::assertDispatchedTimes(SlaBreached::class, 1);
+
+    // Workers come back and drain at speed; the head is a delayed job.
+    Carbon::setTestNow(now()->addSeconds(5));
+    $this->pickups->seedRepeated(20, 1.0, 'redis', 'orders');
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(40, oldestJobAge: 300, queue: 'orders'));
+
     Event::assertDispatchedTimes(SlaRecovered::class, 1);
     expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
 });

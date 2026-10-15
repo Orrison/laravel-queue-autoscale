@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cbox\LaravelQueueAutoscale\Scaling;
 
+use Carbon\Carbon;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\PercentileCalculatorContract;
 use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
@@ -34,6 +35,7 @@ class SlaSignalResolver
     public function resolve(QueueMetricsData $metrics, QueueConfiguration $config): SlaSignal
     {
         $pickupTimes = [];
+        $lastPickupAt = null;
 
         foreach ($config->sampleQueues() as $sampleQueue) {
             $samples = $this->pickupStore->recentSamples(
@@ -44,6 +46,7 @@ class SlaSignalResolver
 
             foreach ($samples as $sample) {
                 $pickupTimes[] = $sample['pickup_seconds'];
+                $lastPickupAt = max($lastPickupAt ?? $sample['timestamp'], $sample['timestamp']);
             }
         }
 
@@ -53,8 +56,18 @@ class SlaSignalResolver
             $config->sla->minSamples,
         );
 
-        return $percentile !== null
-            ? SlaSignal::fromPickupPercentile($percentile, $config->sla->percentile)
-            : SlaSignal::fromOldestJobAgeFallback($metrics->oldestJobAge);
+        if ($percentile === null || $lastPickupAt === null) {
+            return SlaSignal::fromOldestJobAgeFallback($metrics->oldestJobAge);
+        }
+
+        // Carbon's clock rather than microtime(): the same instant on a real
+        // run, and the one a spec can move.
+        $now = (float) Carbon::now()->format('U.u');
+
+        return SlaSignal::fromPickupPercentile(
+            $percentile,
+            $config->sla->percentile,
+            max(0.0, $now - $lastPickupAt),
+        );
     }
 }

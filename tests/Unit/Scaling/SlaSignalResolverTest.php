@@ -84,3 +84,33 @@ test('a group pools the samples of every member queue', function (): void {
     expect($signal->source)->toBe(SlaSignalSource::PickupPercentile)
         ->and($signal->seconds)->toBe(40.0);
 });
+
+test('a measured percentile carries how long ago the newest pickup was', function (): void {
+    $this->store->seedRepeated(20, 2.0);
+    Carbon::setTestNow(now()->addSeconds(12));
+    $this->store->seed([3.0]);
+    Carbon::setTestNow(now()->addSeconds(8));
+
+    $signal = $this->resolver->resolve(QueueMetricsFactory::idle(), makeQueueConfig());
+
+    expect($signal->secondsSinceLastPickup)->toBe(8.0);
+});
+
+test('the newest pickup of a group is the newest across its member queues', function (): void {
+    $this->store->seedRepeated(10, 2.0, 'redis', 'email');
+    Carbon::setTestNow(now()->addSeconds(30));
+    $this->store->seedRepeated(10, 2.0, 'redis', 'sms');
+    Carbon::setTestNow(now()->addSeconds(4));
+
+    $group = GroupConfiguration::fromConfig('notifications', ['queues' => ['email', 'sms'], 'connection' => 'redis']);
+
+    $signal = $this->resolver->resolve(QueueMetricsFactory::idle(), $group->toScalingConfiguration());
+
+    expect($signal->source)->toBe(SlaSignalSource::PickupPercentile)
+        ->and($signal->secondsSinceLastPickup)->toBe(4.0);
+});
+
+test('a fallback reading carries no last-pickup time', function (): void {
+    expect($this->resolver->resolve(QueueMetricsFactory::behind(5, oldestJobAge: 3), makeQueueConfig())->secondsSinceLastPickup)
+        ->toBeNull();
+});
