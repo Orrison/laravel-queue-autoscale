@@ -5,6 +5,50 @@ All notable changes to `laravel-queue-autoscale` will be documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v4.6.0 - 2026-10-15
+
+### Fixed
+
+- **A stalled queue breaches again on Redis and the database.** In 4.5.0 the pickup percentile alone decided breach once the window had `sla.min_samples`. When workers stall, no new pickups are recorded, so the window keeps the fast pickups from before the stall and the percentile stays low: a queue whose head job had waited 200s against a 30s target did not breach until those samples aged out (300s by default). When jobs are pending and no pickup has been recorded for at least `sla.target_seconds`, breach is now judged on the head job's wait: the smaller of its age and the time since the last pickup. A stalled queue breaches about one target after its last pickup. On a queue whose workers keep picking up jobs, an old head job never raises the signal. Redis ages a `->delay()` job, a released retry or a `retry_after` redelivery from dispatch, so such a job reaching the head is not evidence of a wait. The strategy still scales on the percentile.
+- **A recovered Redis or database queue is no longer held as breached.** The guard that keeps a breach open when the pickup window runs short also applied when the oldest age read 0 on Redis and the database, where 0 means a head job under a second old. It now applies only to drivers that cannot report the age: SQS, or any driver other than `redis` and `database`.
+- **Discovered queues on custom-named connections get their real driver.** Discovery reports the connection name as the driver, so a queue on a connection called `redis-high` or `aws` was not recognised as Redis or SQS. Workload metrics, group metrics and the cluster summary's `driver` now come from `queue.connections.*.driver`.
+- **No duplicate breach events for pinned queues in a cluster.** The leader judged each pinned queue twice per tick under one breach key, so it could fire `SlaBreached` and `SlaRecovered` in the same tick, and every follower fired its own copy of each. The leader now owns those events. On a single host, a pinned queue held at the host worker ceiling now reports its breach too.
+- **A new leader carries breach state over.** A manager that regained the lease judged breach against memory from its previous lease, which could fire a second `SlaRecovered` or publish a breach with no `SlaBreached`. It now takes over the breaches from the last published cluster summary.
+- **`HybridStrategy` subclasses get the right signal.** An override of `calculateTargetWorkers()` that answered a queue without calling the parent had that queue judged on the previous queue's signal. Signals are now bound to the workload they were measured for, and an override of `getLastSlaSignal()` is still what the engine sees.
+- **An overridden `SlaSignalResolver` applies everywhere.** `HybridStrategy` built its own resolver, so an override changed pinned workloads only. It now takes the container binding.
+- **The verbose console shows the signal.** On SQS a breach was printed as `oldest_age=0s >= SLA=30s`. The console and log lines now print the reading the breach was judged on, and `held (inconclusive)` for a breach held open.
+
+### Added
+
+- `queue:autoscale:doctor` warns `SQS queues have no SLA signal` for every SQS queue whose pickup times are never recorded: `pickup_time.stamp_pushed_at` is false, or the pickup-time store resolves to the null store (the single-host default). Without them `SlaBreached` and `SlaRecovered` never fire on SQS.
+  - It lists configured queues on an SQS connection and discovered queues actually seen on one (`QueueDiscovery::namesOnDriver()`).
+  - If that discovery read fails, it falls back to the configured queues.
+  
+- `SlaSignal::withStallEvidence()`, `SlaSignal::driverReportsOldestJobAge()` and `SlaSignal::$secondsSinceLastPickup`. `fromPickupPercentile()` and `isInconclusive()` take optional trailing arguments.
+- `HybridStrategy::slaSignalFor()`, plus an optional, trailing `SlaSignalResolver` constructor parameter.
+- `QueueStats` takes an optional `slaSignal` and gains `slaReading()` and `isBreachHeld()`.
+- `AutoscaleConfiguration::pickupTimeStoreClass()` and `WorkloadStateTracker::forgetBreaches()`.
+
+### Documentation
+
+- "How breach is decided", the SQS guide, troubleshooting, events, the API reference and the custom-strategies pages describe the rules above.
+- The upgrade guide has a 4.5 → 4.6 section.
+- Two known limits are documented:
+  - On a quiet queue with no pickup for longer than the target, a delayed job that has just come due can read as a breach until a worker picks it up.
+  - SQS cannot report the oldest job's age, so a stall there is only seen through the samples around it. Alert on CloudWatch's `ApproximateAgeOfOldestMessage` as well.
+  
+
+### Internal
+
+- The test suite never falls back to a Redis on 6379. Redis specs need `REDIS_AVAILABLE` or `REDIS_PORT`, and the CI coverage and simulation runs now set them.
+
+### Upgrading
+
+- No configuration changes. Every new parameter is optional and trailing.
+- On Redis and database queues with pickup samples, a stall opens a breach about one SLA target after the last pickup, which 4.5.0 missed. A delayed or retried job at the head of a busy queue does not.
+- If you run on SQS, run `php artisan queue:autoscale:doctor`.
+- Restart every `queue:autoscale` after upgrading.
+
 ## v4.5.0 - 2026-10-14
 
 ### Fixed
@@ -661,6 +705,7 @@ treat it as a list of queues
 
 
 
+
 ```
 For a group the comma is now the separator and each member is validated on its
 own. An injected option inside a member is still caught.
@@ -1095,6 +1140,7 @@ The autoscale manager exits gracefully for a supervised restart when Laravel's n
   
   
   
+  
   ```
 - **`ResourceEstimate` value object** — Carries CPU/memory estimates with per-dimension source metadata (`measured`, `config`, `default`) and sample counts, enabling downstream consumers to inspect provenance.
 - **`EstimateSource` enum** — `Measured`, `Config`, `Default` — tracks where each dimension of a resource estimate originated.
@@ -1415,6 +1461,7 @@ composer require php-tui/php-tui --dev
 
 
 
+
 ```
 ### Usage
 
@@ -1427,6 +1474,7 @@ php artisan queue:autoscale:debug
 
 # Dispatch test jobs
 php artisan queue:autoscale:test --jobs=10 --queue=default
+
 
 
 
@@ -1473,6 +1521,7 @@ First stable release of Queue Autoscale for Laravel with intelligent, predictive
 
 ```bash
 composer require cboxdk/laravel-queue-autoscale
+
 
 
 
