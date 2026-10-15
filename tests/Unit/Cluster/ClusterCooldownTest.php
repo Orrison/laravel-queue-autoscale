@@ -203,6 +203,8 @@ test('workloads are damped independently of each other', function (): void {
 });
 
 test('regaining leadership discards the damping memory', function (): void {
+    // Taking the lease reads the last published summary.
+    app()->instance(ClusterStoreContract::class, new FakeClusterStore);
     $manager = app(AutoscaleManager::class);
     $noteLeadership = new ReflectionMethod($manager, 'noteLeadership');
 
