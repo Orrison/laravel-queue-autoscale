@@ -110,10 +110,32 @@ readonly class SlaSignal
     }
 
     /**
+     * Queue drivers whose metrics carry a real oldest-job age.
+     *
+     * Laravel's SQS queue cannot report one, so its age is always 0. A driver
+     * not listed here is treated the same way, because an age of 0 from it
+     * cannot be told apart from "unknown".
+     */
+    public const DRIVERS_REPORTING_OLDEST_JOB_AGE = ['redis', 'database'];
+
+    /**
+     * Whether a queue on this driver reports the age of its oldest pending job.
+     */
+    public static function driverReportsOldestJobAge(string $driver): bool
+    {
+        return in_array($driver, self::DRIVERS_REPORTING_OLDEST_JOB_AGE, true);
+    }
+
+    /**
      * Whether this reading says nothing about a breach that is already open.
      *
-     * Only a fallback reading of zero while jobs are still pending qualifies.
-     * That is what a driver unable to report the oldest job's age (SQS) shows
+     * Only a fallback reading of zero while jobs are still pending, from a
+     * driver that cannot report the oldest job's age, qualifies. On Redis or
+     * the database a zero age is a real reading — the head job is under a
+     * second old — and ends a breach like any other. Without the driver the
+     * zero cannot be told apart from "unknown", so it is treated as unknown.
+     *
+     * A zero from a driver unable to report the oldest job's age (SQS) shows
      * whenever the pickup window drops below `sla.min_samples` — which is
      * exactly what a stalled queue looks like, since a stall produces no
      * pickups. Letting it end the breach would emit SlaRecovered for a queue
@@ -124,9 +146,10 @@ readonly class SlaSignal
      * its oldest-age reading is all the evidence it has, and breach behaves
      * exactly as it did before signals existed.
      */
-    public function isInconclusive(int $pending): bool
+    public function isInconclusive(int $pending, bool $driverReportsOldestJobAge = false): bool
     {
-        return $this->source === SlaSignalSource::OldestJobAgeFallback
+        return ! $driverReportsOldestJobAge
+            && $this->source === SlaSignalSource::OldestJobAgeFallback
             && $this->seconds <= 0
             && $pending > 0;
     }

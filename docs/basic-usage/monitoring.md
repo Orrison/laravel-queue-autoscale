@@ -185,8 +185,11 @@ cycle does not end it.
 falls back to the oldest job's age. On a driver that cannot report that age the fallback reads 0,
 and a stalled queue — which by definition makes no pickups — is exactly the queue whose window
 drains. So while a breach is open, a fallback reading of 0 with jobs still pending holds the breach
-rather than recovering it; once the queue is empty it recovers. A custom strategy judged on the
-oldest age (`OldestJobAge`) is not held this way, so its behaviour is unchanged.
+rather than recovering it; once the queue is empty it recovers. This applies only to drivers that
+cannot report the oldest job's age — anything but `redis` and `database`. On those two, an age of 0
+is a real reading (the head job is under a second old) and recovers the breach as usual. A custom
+strategy judged on the oldest age (`OldestJobAge`) is not held this way either, so its behaviour is
+unchanged.
 
 On Amazon SQS the pickup percentile is the only signal, so `SlaBreached` and `SlaRecovered` need
 pickup samples to be recorded — see [Running on Amazon SQS](../deployment/amazon-sqs.md). Without

@@ -67,6 +67,22 @@ test('only a zero fallback reading with work still pending is inconclusive', fun
         ->and(SlaSignal::fromPickupPercentile(0.0, 95)->isInconclusive(pending: 10))->toBeFalse();
 });
 
+test('a zero fallback reading from a driver that reports ages is conclusive', function (): void {
+    expect(SlaSignal::fromOldestJobAgeFallback(0)->isInconclusive(pending: 10, driverReportsOldestJobAge: true))->toBeFalse()
+        ->and(SlaSignal::fromOldestJobAgeFallback(0)->isInconclusive(pending: 10, driverReportsOldestJobAge: false))->toBeTrue();
+});
+
+test('only redis and database report the oldest job age', function (string $driver, bool $reports): void {
+    expect(SlaSignal::driverReportsOldestJobAge($driver))->toBe($reports);
+})->with([
+    'redis' => ['redis', true],
+    'database' => ['database', true],
+    'sqs' => ['sqs', false],
+    'beanstalkd' => ['beanstalkd', false],
+    'unknown' => ['unknown', false],
+    'empty' => ['', false],
+]);
+
 test('it describes itself the way the console logs it', function (): void {
     expect(SlaSignal::fromPickupPercentile(42.04, 95)->describe())->toBe('p95 pickup=42.0s')
         ->and(SlaSignal::fromPickupPercentile(3.0, 99)->describe())->toBe('p99 pickup=3.0s')

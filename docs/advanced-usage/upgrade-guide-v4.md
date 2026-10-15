@@ -245,8 +245,10 @@ What that changes:
 - **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window and the
   head job are both under the target, which can trail the backlog clearing by up to one
   `sla.window_seconds`.
-- **A short window does not end a breach while jobs wait.** An open breach is held when the window
-  falls below `sla.min_samples` and the oldest-age fallback reads 0 with jobs still pending.
+- **A short window does not end a breach while jobs wait.** On a driver that cannot report the
+  oldest job's age (SQS), an open breach is held when the window falls below `sla.min_samples` and
+  the oldest-age fallback reads 0 with jobs still pending. On Redis and the database a 0 is a real
+  age and recovers as usual (since 4.5.1 — 4.5.0 held it there too, for at most a tick).
 
 **Custom strategies are unaffected unless they opt in.** `ScalingStrategyContract` is unchanged. A
 strategy that implements only it is judged on the oldest job's age, as before. To have breach

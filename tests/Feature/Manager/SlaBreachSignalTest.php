@@ -170,6 +170,40 @@ test('a breach is not ended by the pickup window running short of samples while 
     Event::assertNotDispatched(SlaRecovered::class);
 });
 
+test('on Redis a short window with a fresh head of queue recovers the breach', function (): void {
+    // Redis reports a real oldest age. An age of 0 with jobs pending is a head
+    // job under a second old, not a missing reading, so it ends the breach.
+    $this->pickups->seedRepeated(20, 45.0, 'redis', 'orders');
+    evaluateQueueForBreach(QueueMetricsFactory::behind(200, oldestJobAge: 10, queue: 'orders'));
+
+    $this->pickups->clear('redis', 'orders');
+    $manager = evaluateQueueForBreach(QueueMetricsFactory::behind(3, oldestJobAge: 0, queue: 'orders'));
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertDispatchedTimes(SlaRecovered::class, 1);
+    expect(breachQueueStats($manager, 'redis:orders')->slaStatus)->toBe('ok');
+});
+
+test('a driver the package cannot read an age from is held like SQS', function (): void {
+    $this->pickups->seedRepeated(20, 45.0, 'beanstalk', 'orders');
+    config()->set('queue-autoscale.queues', ['orders' => breachQueueRules() + ['connection' => 'beanstalk']]);
+    $metrics = fn (int $pending): QueueMetricsData => QueueMetricsFactory::make([
+        'connection' => 'beanstalk',
+        'queue' => 'orders',
+        'driver' => 'beanstalkd',
+        'depth' => $pending,
+        'pending' => $pending,
+        'oldestJobAge' => 0,
+    ]);
+
+    evaluateQueueForBreach($metrics(200));
+    $this->pickups->clear('beanstalk', 'orders');
+    evaluateQueueForBreach($metrics(200));
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertNotDispatched(SlaRecovered::class);
+});
+
 test('a breach held through a short window ends once the queue is empty', function (): void {
     $this->pickups->seedRepeated(20, 45.0, 'sqs', 'orders');
     evaluateQueueForBreach(QueueMetricsFactory::onSqs(200, 'orders'));

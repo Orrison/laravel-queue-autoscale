@@ -412,7 +412,7 @@ Rules the manager relies on:
 - **Build it with the factories:** `SlaSignal::fromPickupPercentile($seconds, $percentile)` for a
   measured wait, `SlaSignal::fromOldestJobAgeFallback($age)` when you fell back to the age because
   the measurement was unavailable. Only that fallback source lets the manager hold an open breach
-  through a zero reading with jobs still pending — see
+  through a zero reading with jobs still pending, on a driver that cannot report the age — see
   [How breach is decided](../basic-usage/monitoring.md#how-breach-is-decided).
 - **The head of the queue still counts.** The manager raises your signal to the oldest pending
   job's age when that is larger, so a stall your measurement cannot see still breaches. Your

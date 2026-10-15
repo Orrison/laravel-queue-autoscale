@@ -643,7 +643,7 @@ class AutoscaleManager
                 $meta->breachKey(),
                 $meta->slaSignal(),
                 $meta->config->sla->targetSeconds,
-                $meta->metrics->pending,
+                $meta->metrics,
             );
         }
 
@@ -1726,7 +1726,7 @@ class AutoscaleManager
         // 4. Check for SLA breach, on the signal the strategy scaled on
         $key = "{$connection}:{$queue}";
         $slaSignal = $decision->slaSignal ?? SlaSignal::fromOldestJobAge($metrics->oldestJobAge);
-        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics->pending);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics);
 
         if ($isBreaching) {
             $this->verbose("  🚨 SLA BREACH: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
@@ -1880,7 +1880,7 @@ class AutoscaleManager
         $decision = $this->engine->evaluate($aggregated, $config, $currentWorkers, $totalPoolWorkers);
 
         $slaSignal = $decision->slaSignal ?? SlaSignal::fromOldestJobAge($aggregated->oldestJobAge);
-        $isBreaching = $this->isInBreach($key, $slaSignal, $group->sla->targetSeconds, $aggregated->pending);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $group->sla->targetSeconds, $aggregated);
 
         if ($isBreaching) {
             $this->verbose("  🚨 GROUP SLA BREACH: {$slaSignal->describe()} >= SLA={$group->sla->targetSeconds}s", 'error');
@@ -1981,7 +1981,7 @@ class AutoscaleManager
 
         // Track SLA breach state for events, even though we cannot scale to fix it.
         $slaSignal = $this->engine->measureSlaSignal($metrics, $config);
-        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics->pending);
+        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics);
 
         if ($isBreaching) {
             $this->verbose("  🚨 SLA BREACH on pinned queue: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
@@ -2115,13 +2115,14 @@ class AutoscaleManager
      * Read before recordSlaBreachState() updates the remembered state, so the
      * question is always asked against the previous cycle's answer.
      */
-    private function isInBreach(string $breachKey, SlaSignal $slaSignal, int $slaTarget, int $pending): bool
+    private function isInBreach(string $breachKey, SlaSignal $slaSignal, int $slaTarget, QueueMetricsData $metrics): bool
     {
         if ($slaSignal->isBreaching($slaTarget)) {
             return true;
         }
 
-        return $this->workloadState->wasBreaching($breachKey) && $slaSignal->isInconclusive($pending);
+        return $this->workloadState->wasBreaching($breachKey)
+            && $slaSignal->isInconclusive($metrics->pending, SlaSignal::driverReportsOldestJobAge($metrics->driver));
     }
 
     /**
