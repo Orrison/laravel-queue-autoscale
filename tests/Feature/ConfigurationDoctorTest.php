@@ -499,3 +499,21 @@ test('a configured queue without a connection is on SQS when the default connect
     expect($finding)->not->toBeNull()
         ->and($finding->detail)->toStartWith('billing: ');
 });
+
+test('a discovery failure falls back to the configured SQS queues', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+
+    $doctor = new ConfigurationDoctor(new class extends QueueDiscovery
+    {
+        protected function fromMetrics(): array
+        {
+            throw new RuntimeException('metrics store unreachable');
+        }
+    });
+
+    $findings = $doctor->diagnose(['emails']);
+    $finding = findingTitled($findings, 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toStartWith('orders: ');
+});

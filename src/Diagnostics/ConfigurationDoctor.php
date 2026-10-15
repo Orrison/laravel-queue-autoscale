@@ -437,7 +437,7 @@ class ConfigurationDoctor
             }
         }
 
-        foreach ($this->discovery?->namesOnDriver('sqs') ?? [] as $queue) {
+        foreach ($this->discoveredOnDriver('sqs') as $queue) {
             $queues[$queue] = true;
         }
 
@@ -577,6 +577,25 @@ class ConfigurationDoctor
         }
 
         return false;
+    }
+
+    /**
+     * Discovered queue names on a driver, or none when discovery fails.
+     *
+     * This is a second read of the metrics package, after the one that
+     * produced the queue list. If it fails here — a Redis blip between the
+     * two — the check falls back to configured queues rather than aborting
+     * every other finding the doctor has already made.
+     *
+     * @return list<string>
+     */
+    private function discoveredOnDriver(string $driver): array
+    {
+        try {
+            return $this->discovery?->namesOnDriver($driver) ?? [];
+        } catch (\Throwable) {
+            return [];
+        }
     }
 
     private function connectionDriver(string $connection): ?string
