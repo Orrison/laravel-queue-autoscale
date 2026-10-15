@@ -422,7 +422,8 @@ Rules the manager relies on:
   queues without calling `parent::` judges those queues on the oldest job's age, not on the signal
   the parent last measured for another queue.
 - **Pinned workloads skip the strategy.** For those the manager measures with `SlaSignalResolver`
-  directly, so a strategy with its own, different measurement is judged on the shipped one there.
+  directly. `HybridStrategy` uses the same container binding, so overriding the resolver changes
+  both; a strategy with its own, different measurement is judged on the resolver there.
 
 ## What happens to your number
 

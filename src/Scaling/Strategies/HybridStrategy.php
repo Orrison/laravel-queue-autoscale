@@ -60,6 +60,12 @@ class HybridStrategy implements SlaSignalStrategy
      */
     private array $forecasters = [];
 
+    /**
+     * The SLA signal resolver comes from the container, so an override of it
+     * judges scalable workloads the same way it judges pinned ones. Built by
+     * hand without one, the strategy measures with the shipped resolver over
+     * its own pickup store and percentile calculator.
+     */
     public function __construct(
         private readonly LittlesLawCalculator $littles,
         private readonly BacklogDrainCalculator $backlog,
@@ -68,6 +74,7 @@ class HybridStrategy implements SlaSignalStrategy
         private readonly PickupTimeStoreContract $pickupStore,
         private readonly PercentileCalculatorContract $percentileCalc,
         private readonly TargetSmoother $smoother = new TargetSmoother,
+        private readonly ?SlaSignalResolver $slaSignals = null,
     ) {}
 
     public function calculateTargetWorkers(QueueMetricsData $metrics, QueueConfiguration $config): int
@@ -162,7 +169,7 @@ class HybridStrategy implements SlaSignalStrategy
         // too few samples. Measured by the same resolver that judges pinned
         // workloads, and reported through getLastSlaSignal() so the manager
         // decides breach from this number rather than measuring again.
-        $this->lastSlaSignal = (new SlaSignalResolver($this->pickupStore, $this->percentileCalc))
+        $this->lastSlaSignal = ($this->slaSignals ?? new SlaSignalResolver($this->pickupStore, $this->percentileCalc))
             ->resolve($metrics, $config);
         $this->lastSlaSignalWorkload = self::workloadKey($config);
         $p95 = $this->lastSlaSignal->source === SlaSignalSource::PickupPercentile

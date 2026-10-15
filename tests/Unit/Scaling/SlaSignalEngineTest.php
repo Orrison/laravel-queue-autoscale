@@ -320,3 +320,32 @@ test('the container wires the resolver into the engine', function (): void {
 
     expect($signal->source)->toBe(SlaSignalSource::PickupPercentile);
 });
+
+test('an overridden resolver judges scalable and pinned workloads alike', function (): void {
+    $this->store->seedRepeated(20, 48.0, 'sqs', 'default');
+    app()->instance(PickupTimeStoreContract::class, $this->store);
+    app()->instance(SlaSignalResolver::class, new class($this->store, new SortBasedPercentileCalculator) extends SlaSignalResolver
+    {
+        public function resolve(QueueMetricsData $metrics, QueueConfiguration $config): SlaSignal
+        {
+            return SlaSignal::fromPickupPercentile(99.0, 99);
+        }
+    });
+    app()->forgetInstance(ScalingStrategyContract::class);
+    app()->forgetInstance(ScalingEngine::class);
+
+    $engine = app(ScalingEngine::class);
+    $config = makeQueueConfig(['connection' => 'sqs']);
+
+    expect($engine->assessDemand(QueueMetricsFactory::onSqs(10), $config)->slaSignal)->toEqual(SlaSignal::fromPickupPercentile(99.0, 99))
+        ->and($engine->measureSlaSignal(QueueMetricsFactory::onSqs(10), $config))->toEqual(SlaSignal::fromPickupPercentile(99.0, 99));
+});
+
+test('a hybrid strategy built by hand measures with the shipped resolver', function (): void {
+    $this->store->seedRepeated(20, 48.0);
+    $strategy = signalHybrid($this->store);
+
+    $strategy->calculateTargetWorkers(QueueMetricsFactory::backlogged(10), makeQueueConfig());
+
+    expect($strategy->getLastSlaSignal())->toEqual(SlaSignal::fromPickupPercentile(48.0, 95));
+});
