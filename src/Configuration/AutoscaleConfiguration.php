@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Cbox\LaravelQueueAutoscale\Configuration;
 
 use Cbox\LaravelQueueAutoscale\Contracts\FailureWindowStoreContract;
+use Cbox\LaravelQueueAutoscale\Contracts\PickupTimeStoreContract;
 use Cbox\LaravelQueueAutoscale\Fuse\CacheFailureWindowStore;
 use Cbox\LaravelQueueAutoscale\Fuse\ConfigurableFailureClassifier;
 use Cbox\LaravelQueueAutoscale\Fuse\NullFailureWindowStore;
+use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
+use Cbox\LaravelQueueAutoscale\Pickup\RedisPickupTimeStore;
 use Illuminate\Support\Str;
 
 readonly class AutoscaleConfiguration
@@ -169,6 +172,28 @@ readonly class AutoscaleConfiguration
         $configured = config('queue-autoscale.pickup_time.store', 'auto');
 
         return is_string($configured) ? trim($configured) : 'auto';
+    }
+
+    /**
+     * The pickup-time store class the configuration selects.
+     *
+     * `auto` is Redis in cluster mode and the null store on a single host,
+     * where samples are only kept when the store is set to `redis`. Resolved
+     * here so the service provider and the doctor agree on which store is in
+     * use.
+     *
+     * @return class-string<PickupTimeStoreContract>|string
+     */
+    public static function pickupTimeStoreClass(): string
+    {
+        return match (self::pickupTimeStore()) {
+            '', 'auto' => self::clusterEnabled()
+                ? RedisPickupTimeStore::class
+                : NullPickupTimeStore::class,
+            'redis' => RedisPickupTimeStore::class,
+            'null' => NullPickupTimeStore::class,
+            default => self::pickupTimeStore(),
+        };
     }
 
     public static function pickupMaxSampleSeconds(): ?float

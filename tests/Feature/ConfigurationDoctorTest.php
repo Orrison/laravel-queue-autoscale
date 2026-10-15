@@ -6,6 +6,7 @@ use Cbox\LaravelQueueAutoscale\Configuration\Profiles\ConnectionLimitedProfile;
 use Cbox\LaravelQueueAutoscale\Diagnostics\ConfigurationDoctor;
 use Cbox\LaravelQueueAutoscale\Diagnostics\Finding;
 use Cbox\LaravelQueueAutoscale\Diagnostics\Severity;
+use Cbox\LaravelQueueAutoscale\Testing\InMemoryPickupTimeStore;
 
 /**
  * @param  list<string>  $queues
@@ -360,4 +361,75 @@ test('the pickup cap is checked against the default SLA for queues with no rule 
 
     expect($finding)->not->toBeNull()
         ->and($finding->detail)->toContain("'default' (30s)");
+});
+
+// --- SQS queues without pickup samples ---
+
+function sqsDoctorSetup(bool $stamp, string $store, bool $cluster): void
+{
+    config()->set('queue.connections.sqs', ['driver' => 'sqs']);
+    config()->set('queue-autoscale.queues', [
+        'orders' => ['connection' => 'sqs'],
+        'emails' => ['connection' => 'redis'],
+    ]);
+    config()->set('queue-autoscale.pickup_time.stamp_pushed_at', $stamp);
+    config()->set('queue-autoscale.pickup_time.store', $store);
+    config()->set('queue-autoscale.cluster.enabled', $cluster);
+}
+
+test('an SQS queue on a single host with the default pickup settings has no SLA signal', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+
+    $finding = findingTitled(diagnose(['emails']), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->severity)->toBe(Severity::Warning)
+        ->and($finding->detail)->toStartWith('orders: ')
+        ->and($finding->detail)->not->toContain('emails')
+        ->and($finding->detail)->toContain('not stamped with pushedAt')
+        ->and($finding->detail)->toContain('null store')
+        ->and($finding->remedy)->toContain('QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true')
+        ->and($finding->remedy)->toContain('QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis');
+});
+
+test('each missing piece of the SQS pickup setup is named on its own', function (bool $stamp, string $store, bool $cluster, ?string $named, ?string $notNamed): void {
+    sqsDoctorSetup($stamp, $store, $cluster);
+
+    $finding = findingTitled(diagnose([]), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toContain($named)
+        ->and($finding->detail)->not->toContain($notNamed);
+})->with([
+    'stamped, null store on a single host' => [true, 'auto', false, 'null store', 'pushedAt'],
+    'stamped, store explicitly null' => [true, 'null', true, 'null store', 'pushedAt'],
+    'not stamped, redis store' => [false, 'redis', false, 'pushedAt', 'null store'],
+]);
+
+test('SQS queues with pushedAt stamped and a shared store are not reported', function (string $store, bool $cluster): void {
+    sqsDoctorSetup(stamp: true, store: $store, cluster: $cluster);
+
+    expect(findingTitled(diagnose([]), 'SQS queues have no SLA signal'))->toBeNull();
+})->with([
+    'redis on a single host' => ['redis', false],
+    'auto in cluster mode' => ['auto', true],
+    'a custom store class' => [InMemoryPickupTimeStore::class, false],
+]);
+
+test('without an SQS queue the pickup setup is not reported', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+    config()->set('queue-autoscale.queues', ['emails' => ['connection' => 'redis']]);
+
+    expect(findingTitled(diagnose(['emails', 'default']), 'SQS queues have no SLA signal'))->toBeNull();
+});
+
+test('discovered queues count as SQS when the default connection is SQS', function (): void {
+    sqsDoctorSetup(stamp: false, store: 'auto', cluster: false);
+    config()->set('queue-autoscale.queues', []);
+    config()->set('queue.default', 'sqs');
+
+    $finding = findingTitled(diagnose(['invoices', 'reports']), 'SQS queues have no SLA signal');
+
+    expect($finding)->not->toBeNull()
+        ->and($finding->detail)->toStartWith('invoices, reports: ');
 });

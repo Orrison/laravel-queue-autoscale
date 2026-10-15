@@ -60,6 +60,23 @@ WARN   The pickup sample cap hides SLA breaches
 
 A cap of `null` or `0` keeps every sample and is never reported.
 
+**SQS queues with no SLA signal.** SQS cannot report how long its oldest job has waited, so pickup
+samples are the only SLA signal an SQS queue has. A sample needs `pushedAt` stamped on the job and a
+store the workers and the manager share. Without them `SlaBreached` and `SlaRecovered` never fire for
+the queue and the strategy cannot see how long jobs wait. The warning names every queue on an `sqs`
+connection — configured ones, plus discovered ones when the default connection is SQS — and what is
+missing:
+
+```text
+WARN   SQS queues have no SLA signal
+       orders: jobs are not stamped with pushedAt (pickup_time.stamp_pushed_at is false); samples
+       are not stored (the pickup-time store resolves to the null store). SQS cannot report how
+       long its oldest job has waited, so without pickup samples SlaBreached and SlaRecovered never
+       fire and the strategy cannot see the wait.
+       → Set QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true and, on a single host,
+         QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis.
+```
+
 **A leader lease too short to survive a slow cycle.** In cluster mode the leader renews its lease
 as part of each evaluation cycle. Below three evaluation intervals, one slow metrics read or Redis
 latency spike hands leadership to another host, and every handover restarts worker placement,

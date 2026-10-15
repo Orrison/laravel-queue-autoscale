@@ -8,6 +8,7 @@ use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
 use Cbox\LaravelQueueAutoscale\Configuration\InvalidConfigurationException;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfigResolver;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
+use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
 
 /**
  * Checks a configuration against the ways it can be valid and still wrong.
@@ -45,6 +46,7 @@ class ConfigurationDoctor
                 $this->discoveryWithoutACeiling($discoveredQueues),
                 $this->fifoQueuesAllowingParallelism($discoveredQueues),
                 $this->pickupCapHidingSlaBreaches($discoveredQueues),
+                $this->sqsQueuesWithoutPickupSamples($discoveredQueues),
                 $this->configurationLeftOverFromV3(),
             ] as $group
         ) {
@@ -386,6 +388,66 @@ class ConfigurationDoctor
     }
 
     /**
+     * SQS queues whose pickup times are never recorded.
+     *
+     * SQS cannot report how long its oldest message has waited — Laravel reads
+     * it as 0 — so pickup samples are the only SLA signal an SQS queue has. A
+     * sample needs `pushedAt` in the payload, which only Horizon writes and
+     * Horizon does not run on SQS, and a store the worker processes and the
+     * manager share, which `auto` gives only in cluster mode. Missing either,
+     * SlaBreached and SlaRecovered can never fire for the queue and the
+     * strategy scales on arrival rate and backlog alone, with no measure of
+     * how long jobs wait. Nothing errors: the queue simply always reads as
+     * within its SLA.
+     *
+     * @param  list<string>  $discoveredQueues
+     * @return list<Finding>
+     */
+    private function sqsQueuesWithoutPickupSamples(array $discoveredQueues): array
+    {
+        $missing = [];
+
+        if (! AutoscaleConfiguration::stampPushedAt()) {
+            $missing[] = 'jobs are not stamped with pushedAt (pickup_time.stamp_pushed_at is false)';
+        }
+
+        if (AutoscaleConfiguration::pickupTimeStoreClass() === NullPickupTimeStore::class) {
+            $missing[] = 'samples are not stored (the pickup-time store resolves to the null store)';
+        }
+
+        if ($missing === []) {
+            return [];
+        }
+
+        $queues = [];
+
+        foreach (AutoscaleConfiguration::configuredQueues() as $queue) {
+            if ($this->connectionDriver($queue['connection']) === 'sqs') {
+                $queues[$queue['queue']] = true;
+            }
+        }
+
+        if ($this->connectionDriver($this->defaultConnection()) === 'sqs') {
+            foreach ($discoveredQueues as $queue) {
+                $queues[$queue] = true;
+            }
+        }
+
+        if ($queues === []) {
+            return [];
+        }
+
+        return [Finding::warning(
+            'SQS queues have no SLA signal',
+            implode(', ', array_keys($queues)).': '.implode('; ', $missing).'. SQS cannot report how long '
+            .'its oldest job has waited, so without pickup samples SlaBreached and SlaRecovered never fire '
+            .'and the strategy cannot see the wait.',
+            'Set QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true and, on a single host, '
+            .'QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis.',
+        )];
+    }
+
+    /**
      * Configuration written for v3 that v4 silently ignores.
      *
      * Both of these are the shape of upgrade mistake that produces no error
@@ -507,6 +569,13 @@ class ConfigurationDoctor
         }
 
         return false;
+    }
+
+    private function connectionDriver(string $connection): ?string
+    {
+        $driver = config("queue.connections.{$connection}.driver");
+
+        return is_string($driver) ? $driver : null;
     }
 
     private function defaultConnection(): string

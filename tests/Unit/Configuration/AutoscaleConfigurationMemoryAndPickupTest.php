@@ -3,6 +3,9 @@
 declare(strict_types=1);
 
 use Cbox\LaravelQueueAutoscale\Configuration\AutoscaleConfiguration;
+use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
+use Cbox\LaravelQueueAutoscale\Pickup\RedisPickupTimeStore;
+use Cbox\LaravelQueueAutoscale\Testing\InMemoryPickupTimeStore;
 
 test('the shipped config carries the v4.4 defaults', function (): void {
     expect(config('queue-autoscale.limits.memory_limit_mb'))->toBeNull()
@@ -93,3 +96,17 @@ test('a connection can be worked unless its driver runs or discards jobs in-proc
 test('an unconfigured connection is not judged unworkable', function (): void {
     expect(AutoscaleConfiguration::connectionCanBeWorked('does-not-exist'))->toBeTrue();
 });
+
+test('the pickup-time store class follows the store setting and cluster mode', function (string $store, bool $cluster, string $expected): void {
+    config()->set('queue-autoscale.pickup_time.store', $store);
+    config()->set('queue-autoscale.cluster.enabled', $cluster);
+
+    expect(AutoscaleConfiguration::pickupTimeStoreClass())->toBe($expected);
+})->with([
+    'auto on a single host' => ['auto', false, NullPickupTimeStore::class],
+    'auto in a cluster' => ['auto', true, RedisPickupTimeStore::class],
+    'blank on a single host' => ['  ', false, NullPickupTimeStore::class],
+    'redis on a single host' => ['redis', false, RedisPickupTimeStore::class],
+    'null in a cluster' => ['null', true, NullPickupTimeStore::class],
+    'a class name' => [InMemoryPickupTimeStore::class, false, InMemoryPickupTimeStore::class],
+]);

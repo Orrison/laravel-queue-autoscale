@@ -91,7 +91,8 @@ say how long that job has waited, and a stall records no new pickups, so a breac
 through the samples recorded before and after it. Alert on `ApproximateAgeOfOldestMessage` in
 CloudWatch as well if you need to catch a stall on SQS.
 
-A sample needs two things:
+A sample needs two things, and `queue:autoscale:doctor` warns about every SQS queue missing either
+(`SQS queues have no SLA signal`):
 
 - **`pushedAt` in the job payload.** Horizon writes it, but Horizon only runs on Redis, so on SQS
   set `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true`. The package then stamps `pushedAt` on every job
@@ -211,4 +212,4 @@ as a `WorkerExited` with signal 9 — see
 - [ ] `QUEUE_AUTOSCALE_STAMP_PUSHED_AT=true`
 - [ ] `QUEUE_AUTOSCALE_PICKUP_TIME_STORE=redis` on a single host (cluster mode uses Redis already)
 - [ ] `workers.timeout_seconds` below each queue's visibility timeout
-- [ ] `php artisan queue:autoscale:doctor` run, with no SQS name or pickup-cap warnings
+- [ ] `php artisan queue:autoscale:doctor` run, with no SQS name, SLA-signal or pickup-cap warnings

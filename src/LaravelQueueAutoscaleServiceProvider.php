@@ -27,7 +27,6 @@ use Cbox\LaravelQueueAutoscale\Fuse\FailureFuse;
 use Cbox\LaravelQueueAutoscale\Fuse\JobOutcomeRecorder;
 use Cbox\LaravelQueueAutoscale\Manager\AutoscaleManager;
 use Cbox\LaravelQueueAutoscale\Manager\SignalHandler;
-use Cbox\LaravelQueueAutoscale\Pickup\NullPickupTimeStore;
 use Cbox\LaravelQueueAutoscale\Pickup\PickupSampler;
 use Cbox\LaravelQueueAutoscale\Pickup\PickupTimeRecorder;
 use Cbox\LaravelQueueAutoscale\Pickup\PushedAtStamper;
@@ -263,16 +262,7 @@ class LaravelQueueAutoscaleServiceProvider extends ServiceProvider
 
     private function resolvePickupTimeStoreClass(): string
     {
-        $configured = AutoscaleConfiguration::pickupTimeStore();
-
-        return match ($configured) {
-            '', 'auto' => AutoscaleConfiguration::clusterEnabled()
-                ? RedisPickupTimeStore::class
-                : NullPickupTimeStore::class,
-            'redis' => RedisPickupTimeStore::class,
-            'null' => NullPickupTimeStore::class,
-            default => $configured,
-        };
+        return AutoscaleConfiguration::pickupTimeStoreClass();
     }
 
     /**
