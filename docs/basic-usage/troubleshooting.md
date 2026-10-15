@@ -280,7 +280,7 @@ A breach is also held, not recovered, while the window has fewer than `sla.min_s
 
 ## `SlaBreached` fires while the oldest job is young
 
-When a queue has at least `sla.min_samples` pickups in its window, breach is judged on the larger of the pickup percentile — the number the strategy scales on — and the oldest job's age. A p95 over the target is a breach however young the head of the queue is, and a head job at or over the target is a breach however fast the p95 is, so a stalled queue breaches even while its window still holds fast pickups (4.5.0 let the percentile win there; fixed in 4.5.1). Read `$event->slaSignal` (or `signalSeconds()`) to see the number a breach was decided on; `oldestJobAge` is only the driver's raw reading.
+When a queue has at least `sla.min_samples` pickups in its window, breach is judged on the larger of the pickup percentile — the number the strategy scales on — and the oldest job's age. A p95 over the target is a breach however young the head of the queue is, and a head job at or over the target is a breach however fast the p95 is, so a stalled queue breaches even while its window still holds fast pickups (4.5.0 let the percentile win there; fixed in 4.6.0). Read `$event->slaSignal` (or `signalSeconds()`) to see the number a breach was decided on; `oldestJobAge` is only the driver's raw reading.
 
 ## `queue:autoscale:doctor` warns about the pickup sample cap
 

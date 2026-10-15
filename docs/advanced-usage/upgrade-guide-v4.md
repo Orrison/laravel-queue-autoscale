@@ -240,7 +240,7 @@ What that changes:
   Expect alerts on SQS queues that were silently breaching.
 - **On Redis, with samples, a p95 over the target opens a breach** even while the head of the queue
   is young. A head job at or over the target still opens one too, however fast the p95 is: breach is
-  judged on whichever of the two is further behind (since 4.5.1 — 4.5.0 let the percentile win, so
+  judged on whichever of the two is further behind (since 4.6.0 — 4.5.0 let the percentile win, so
   a stalled queue whose window still held fast pickups did not breach until they aged out).
 - **Recovery follows the window.** `SlaRecovered` fires when the percentile over the window and the
   head job are both under the target, which can trail the backlog clearing by up to one
@@ -248,7 +248,7 @@ What that changes:
 - **A short window does not end a breach while jobs wait.** On a driver that cannot report the
   oldest job's age (SQS), an open breach is held when the window falls below `sla.min_samples` and
   the oldest-age fallback reads 0 with jobs still pending. On Redis and the database a 0 is a real
-  age and recovers as usual (since 4.5.1 — 4.5.0 held it there too, for at most a tick).
+  age and recovers as usual (since 4.6.0 — 4.5.0 held it there too, for at most a tick).
 
 **Custom strategies are unaffected unless they opt in.** `ScalingStrategyContract` is unchanged. A
 strategy that implements only it is judged on the oldest job's age, as before. To have breach
@@ -278,3 +278,34 @@ subclasses keep working:
 - [ ] SLA alerts on SQS queues reviewed — they can fire now
 - [ ] Alert messages built from `$event->oldestJobAge` switched to `$event->signalSeconds()`
 - [ ] Custom strategies that measure pickup time: consider implementing `SlaSignalStrategy`
+
+### 4.5 to 4.6
+
+```bash
+composer require cboxdk/laravel-queue-autoscale:^4.6
+```
+
+Restart every `queue:autoscale` process. Nothing in the config file changes. 4.6 corrects how 4.5
+judged breach and adds a doctor check:
+
+- **A stalled queue breaches again.** Breach is judged on the larger of the pickup percentile and
+  the oldest job's age, so a head job at or over the target opens a breach even while the window
+  still holds fast pickups from before the stall. Recovery needs both under the target. Scaling is
+  unchanged.
+- **A zero age is only "unknown" on SQS.** A breach is held through a short window only on drivers
+  that cannot report the oldest job's age. On Redis and the database it recovers as usual.
+- **Pinned queues in a cluster** fire one `SlaBreached` / `SlaRecovered` per cluster, from the
+  leader, instead of one per manager. A newly elected leader carries open breaches over from the
+  last published summary instead of announcing them again.
+- **The doctor warns about SQS queues with no SLA signal**: an SQS queue while
+  `pickup_time.stamp_pushed_at` is off, or while the pickup store resolves to the null store.
+- **A `HybridStrategy` subclass** that answers some queues itself no longer reports the previous
+  queue's SLA signal for them, and `HybridStrategy` now uses a container-bound
+  `SlaSignalResolver`.
+- **Verbose console output** prints the signal a breach was judged on, and `held (inconclusive)`
+  while a breach is held through a short window.
+
+#### 4.6 checklist
+
+- [ ] Every `queue:autoscale` process restarted
+- [ ] `php artisan queue:autoscale:doctor` run, with no SQS SLA-signal warning
