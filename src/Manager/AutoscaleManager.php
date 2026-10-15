@@ -1979,12 +1979,56 @@ class AutoscaleManager
 
         $this->verbose("  🔒 Exclusive/pinned queue: enforcing {$target} worker(s), current={$current}", 'debug');
 
-        // Track SLA breach state for events, even though we cannot scale to fix it.
+        // Track SLA breach state for events, even though we cannot scale to
+        // fix it. Recorded before any spawn, so a queue held at the host
+        // ceiling — which returns early below — still reports its breach.
+        //
+        // Under a cluster target the leader has already judged this queue and
+        // fired its events: it measures every pinned queue in its own demand
+        // pass. Recording here as well measured the leader's queue twice per
+        // tick under one breach key, so two readings either side of the
+        // target fired SlaBreached and SlaRecovered in the same tick, and
+        // every follower fired its own copy of each. The status is still
+        // shown, judged on this reading alone.
         $slaSignal = $this->engine->measureSlaSignal($metrics, $config);
-        $isBreaching = $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics);
+        $ownsBreachState = $clusterTarget === null;
+        $isBreaching = $ownsBreachState
+            ? $this->isInBreach($key, $slaSignal, $config->sla->targetSeconds, $metrics)
+            : $slaSignal->isBreaching($config->sla->targetSeconds);
 
         if ($isBreaching) {
             $this->verbose("  🚨 SLA BREACH on pinned queue: {$slaSignal->describe()} >= SLA={$config->sla->targetSeconds}s", 'error');
+        }
+
+        // Keep queue stats fresh so the renderer shows pinned queues too.
+        $slaStatus = $this->slaStatus($isBreaching, $slaSignal, $config->sla->targetSeconds);
+        $this->currentQueueStats[$key] = new QueueStats(
+            connection: $connection,
+            queue: $queue,
+            depth: $metrics->pending,
+            pending: $metrics->pending,
+            throughputPerMinute: $metrics->throughputPerMinute,
+            oldestJobAge: $metrics->oldestJobAge,
+            slaTarget: $config->sla->targetSeconds,
+            slaStatus: $slaStatus,
+            activeWorkers: $current,
+            targetWorkers: $target,
+            reserved: $metrics->reserved,
+            scheduled: $metrics->scheduled,
+        );
+
+        // Fire SLA events even though we can't scale — operators need to know.
+        if ($ownsBreachState) {
+            $this->recordSlaBreachState(
+                breachKey: $key,
+                isBreaching: $isBreaching,
+                connection: $connection,
+                name: $queue,
+                slaSignal: $slaSignal,
+                slaTarget: $config->sla->targetSeconds,
+                metrics: $metrics,
+                activeWorkers: $current,
+            );
         }
 
         if ($current < $target) {
@@ -2070,35 +2114,6 @@ class AutoscaleManager
                 reason: 'supervisor:trim',
             ));
         }
-
-        // Keep queue stats fresh so the renderer shows pinned queues too.
-        $slaStatus = $this->slaStatus($isBreaching, $slaSignal, $config->sla->targetSeconds);
-        $this->currentQueueStats[$key] = new QueueStats(
-            connection: $connection,
-            queue: $queue,
-            depth: $metrics->pending,
-            pending: $metrics->pending,
-            throughputPerMinute: $metrics->throughputPerMinute,
-            oldestJobAge: $metrics->oldestJobAge,
-            slaTarget: $config->sla->targetSeconds,
-            slaStatus: $slaStatus,
-            activeWorkers: $current,
-            targetWorkers: $target,
-            reserved: $metrics->reserved,
-            scheduled: $metrics->scheduled,
-        );
-
-        // Fire SLA events even though we can't scale — operators need to know.
-        $this->recordSlaBreachState(
-            breachKey: $key,
-            isBreaching: $isBreaching,
-            connection: $connection,
-            name: $queue,
-            slaSignal: $slaSignal,
-            slaTarget: $config->sla->targetSeconds,
-            metrics: $metrics,
-            activeWorkers: $current,
-        );
 
         $this->policies->afterScaling($decision);
     }

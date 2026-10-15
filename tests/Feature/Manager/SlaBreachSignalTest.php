@@ -415,3 +415,64 @@ test('a pinned SQS queue breaches on its pickup percentile even though the strat
         && $event->slaSignal->source === SlaSignalSource::PickupPercentile);
     expect(breachQueueStats($manager, 'sqs:ledger')->slaStatus)->toBe('breached');
 });
+
+function pinnedLedgerManager(): AutoscaleManager
+{
+    config()->set('queue-autoscale.queues', [
+        'ledger' => [
+            'sla' => ['target_seconds' => 30, 'percentile' => 95, 'window_seconds' => 300, 'min_samples' => 5],
+            'workers' => ['min' => 1, 'max' => 1, 'scalable' => false],
+        ],
+    ]);
+
+    return app(AutoscaleManager::class);
+}
+
+test('a pinned queue under a cluster target leaves breach events to the leader', function (): void {
+    $manager = pinnedLedgerManager();
+    $this->pickups->seedRepeated(10, 90.0, 'sqs', 'ledger');
+    $config = QueueConfiguration::fromConfig('sqs', 'ledger');
+    $supervise = new ReflectionMethod($manager, 'superviseQueue');
+
+    $supervise->invoke($manager, $config, QueueMetricsFactory::onSqs(30, 'ledger'), 0);
+
+    Event::assertNotDispatched(SlaBreached::class);
+    // The console still shows what this host measured.
+    expect(breachQueueStats($manager, 'sqs:ledger')->slaStatus)->toBe('breached');
+
+    // And no breach state was remembered, so the pickups clearing is not a
+    // recovery this host announces either.
+    $this->pickups->clear('sqs', 'ledger');
+    $supervise->invoke($manager, $config, QueueMetricsFactory::onSqs(0, 'ledger'), 0);
+
+    Event::assertNotDispatched(SlaRecovered::class);
+    expect(breachQueueStats($manager, 'sqs:ledger')->slaStatus)->toBe('ok');
+});
+
+test('a pinned queue held at the host worker ceiling still reports its breach', function (): void {
+    // One worker on another queue fills the host's single slot, so the
+    // ledger's missing worker cannot be spawned and supervision returns early.
+    config()->set('queue-autoscale.limits.max_total_workers', 1);
+    $manager = pinnedLedgerManager();
+    $pool = (new ReflectionProperty($manager, 'pool'))->getValue($manager);
+    $pool->add(new class(new Process(['true']), 'sqs', 'other', now()) extends WorkerProcess
+    {
+        public function isRunning(): bool
+        {
+            return true;
+        }
+
+        public function isTerminating(): bool
+        {
+            return false;
+        }
+    });
+    $this->pickups->seedRepeated(10, 90.0, 'sqs', 'ledger');
+
+    (new ReflectionMethod($manager, 'superviseQueue'))
+        ->invoke($manager, QueueConfiguration::fromConfig('sqs', 'ledger'), QueueMetricsFactory::onSqs(30, 'ledger'), null);
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    expect(breachQueueStats($manager, 'sqs:ledger')->slaStatus)->toBe('breached')
+        ->and($pool->totalCount())->toBe(1);
+});
