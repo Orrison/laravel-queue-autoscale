@@ -18,6 +18,7 @@ use Cbox\LaravelQueueMetrics\Repositories\Contracts\QueueMetricsRepository;
 use Cbox\LaravelQueueMetrics\Services\JobMetricsQueryService;
 use Cbox\LaravelQueueMetrics\Services\QueueMetricsQueryService;
 use Cbox\Telemetry\TelemetryManager;
+use Illuminate\Support\Facades\Redis;
 
 // Scoped rather than ->in(__DIR__) so tests/Integration can claim its own
 // base case: those specs talk to real infrastructure and need queue-metrics'
@@ -147,6 +148,25 @@ function elasticMqEndpoint(): string
     $endpoint = env('SQS_TEST_ENDPOINT', 'http://localhost:9324');
 
     return rtrim(is_string($endpoint) ? $endpoint : 'http://localhost:9324', '/');
+}
+
+/**
+ * Whether the test Redis answers.
+ *
+ * TestCase points it at a dead port unless REDIS_AVAILABLE or REDIS_PORT names
+ * one, so this is false on a developer machine whose 6379 belongs to something
+ * else. The SQS specs need it too: queuing a job records its queued time in
+ * laravel-queue-metrics' Redis storage.
+ */
+function redisReachable(): bool
+{
+    try {
+        Redis::connection()->command('ping', []);
+
+        return true;
+    } catch (Throwable) {
+        return false;
+    }
 }
 
 function elasticMqReachable(): bool

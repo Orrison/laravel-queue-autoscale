@@ -62,6 +62,10 @@ beforeEach(function (): void {
         test()->markTestSkipped('ElasticMQ is not running on '.elasticMqEndpoint());
     }
 
+    if (! redisReachable()) {
+        test()->markTestSkipped('No local Redis for queue-metrics storage');
+    }
+
     $endpoint = elasticMqEndpoint();
 
     $this->fifoQueue = 'probe-'.bin2hex(random_bytes(6)).'.fifo';
@@ -88,11 +92,28 @@ test('a queued job reaches a fifo queue and shows up as depth', function (): voi
     expect(QueueMetrics::getQueueDepth('sqs', $this->fifoQueue)->pendingJobs)->toBeGreaterThan(0);
 });
 
-test('a job without a message group is rejected by the queue', function (): void {
-    // Worth pinning because the failure is at dispatch, not at processing: a
-    // job class that forgets messageGroup() throws the moment it is queued.
-    expect(fn () => Queue::connection('sqs')->push(new GrouplessProbeJob, '', $this->fifoQueue))
-        ->toThrow(Exception::class, 'MessageGroupId');
+test('a job without a message group is grouped under the queue name, or rejected on older laravel', function (): void {
+    // Newer Laravel sends the queue name as MessageGroupId when a job has no
+    // messageGroup(), which puts every such job in one group: a FIFO queue
+    // fed only by them is served one job at a time however many workers run.
+    // Older Laravel sends no group, and SQS rejects the message at dispatch.
+    $sqs = Queue::connection('sqs');
+
+    try {
+        $sqs->push(new GrouplessProbeJob, '', $this->fifoQueue);
+    } catch (Exception $exception) {
+        expect($exception->getMessage())->toContain('MessageGroupId');
+
+        return;
+    }
+
+    $received = $sqs->getSqs()->receiveMessage([
+        'QueueUrl' => $sqs->getQueue($this->fifoQueue),
+        'MessageSystemAttributeNames' => ['MessageGroupId'],
+        'AttributeNames' => ['MessageGroupId'],
+    ]);
+
+    expect($received['Messages'][0]['Attributes']['MessageGroupId'] ?? null)->toBe($this->fifoQueue);
 });
 
 test('a queue name ending in .fifo can be configured at all', function (): void {

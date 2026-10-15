@@ -34,6 +34,10 @@ class TestCase extends Orchestra
      * Point the `default` Redis connection at a cluster when
      * REDIS_CLUSTER_HOSTS_AND_PORTS is set, otherwise a single node, so the
      * redis-group specs run against both modes depending on the CI job.
+     *
+     * Without REDIS_AVAILABLE or an explicit REDIS_PORT the single node is a
+     * port nothing listens on. Specs that probe for Redis then skip instead
+     * of writing to whatever happens to run on 6379 on a developer machine.
      */
     private function configureRedis(): void
     {
@@ -61,7 +65,7 @@ class TestCase extends Orchestra
         }
 
         $host = getenv('REDIS_HOST') ?: '127.0.0.1';
-        $port = getenv('REDIS_PORT') ?: '6379';
+        $port = getenv('REDIS_PORT') ?: (getenv('REDIS_AVAILABLE') ? '6379' : '1');
 
         config()->set('database.redis', [
             'client' => 'phpredis',

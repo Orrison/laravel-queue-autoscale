@@ -158,6 +158,10 @@ applies here.
 - Redis and SQS specs are env-gated and skip unless `REDIS_AVAILABLE` /
   `REDIS_CLUSTER_HOSTS_AND_PORTS` / the AWS credentials are set. A local run showing
   ~15 skipped tests is normal.
+- Without `REDIS_AVAILABLE` or `REDIS_PORT` the test Redis points at a dead port, never
+  6379, so specs that probe for Redis skip. Run them against a throwaway container:
+  `docker run -d --rm -p 6393:6379 redis:7` and `REDIS_PORT=6393 vendor/bin/pest`. The
+  SQS specs also need ElasticMQ on 9324 (see `tests/Pest.php`) and the test Redis.
 
 Run the minimal set of tests with filters while iterating; run the full suite before
 finalizing. When tests relating to your feature pass, ask whether to run everything.

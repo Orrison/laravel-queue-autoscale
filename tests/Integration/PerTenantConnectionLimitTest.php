@@ -23,9 +23,10 @@ use Illuminate\Support\Facades\Redis;
  * guarantee that a worker handles one job at a time, not this package's, so it
  * is not restated here.
  *
- * Redis specs need a local Redis; SQS specs need the ElasticMQ container
- * described in tests/Integration/SqsQueueDepthTest.php. Each skips when its
- * dependency is absent.
+ * Redis specs need a local Redis named by REDIS_AVAILABLE or REDIS_PORT;
+ * SQS specs need the ElasticMQ container described in
+ * tests/Integration/SqsQueueDepthTest.php. Each skips when its dependency is
+ * absent.
  */
 const TENANT_CONNECTION_LIMIT = 5;
 
@@ -46,17 +47,6 @@ function tenantQueues(string $separator, string $suffix): array
         static fn (string $name): string => "tenant{$separator}{$name}-{$suffix}",
         ['acme', 'globex', 'initech'],
     );
-}
-
-function redisReachable(): bool
-{
-    try {
-        Redis::connection()->command('ping', []);
-
-        return true;
-    } catch (Throwable) {
-        return false;
-    }
 }
 
 /**
@@ -135,6 +125,10 @@ test('every tenant is capped at its connection limit on redis', function (): voi
 test('every tenant is capped at its connection limit on sqs', function (): void {
     if (! elasticMqReachable()) {
         test()->markTestSkipped('ElasticMQ is not running on '.elasticMqEndpoint());
+    }
+
+    if (! redisReachable()) {
+        test()->markTestSkipped('No local Redis for queue-metrics storage');
     }
 
     $endpoint = elasticMqEndpoint();
