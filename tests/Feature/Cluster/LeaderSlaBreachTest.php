@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Cbox\LaravelQueueAutoscale\Cluster\ClusterManagerState;
+use Cbox\LaravelQueueAutoscale\Cluster\CooldownDecision;
 use Cbox\LaravelQueueAutoscale\Cluster\EvaluatedWorkload;
 use Cbox\LaravelQueueAutoscale\Configuration\QueueConfiguration;
 use Cbox\LaravelQueueAutoscale\Contracts\ClusterStoreContract;
@@ -293,32 +294,95 @@ test('the leader measures a pinned workload directly, since no strategy runs for
         && $event->slaSignal?->seconds === 75.0);
 });
 
-test('the damper reports a breach override from the signal, not just the oldest age', function (): void {
+/**
+ * A cluster target that reverses a scale-down made five seconds ago. A
+ * reversing scale-up is never held; the damper reports it as a breach
+ * override when the workload is in breach.
+ *
+ * @return array{0: AutoscaleManager, 1: Closure(SlaSignal, ?bool): CooldownDecision}
+ */
+function reversingLeader(): array
+{
     $manager = app(AutoscaleManager::class);
     $config = QueueConfiguration::fromConfig('sqs', 'orders');
 
-    // A scale-down a moment ago, so the scale-up below is a reversal.
     $cooldown = (new ReflectionProperty($manager, 'cooldown'))->getValue($manager);
     $cooldown->apply('queue:sqs:orders', 6, 2, false, 60);
     Carbon::setTestNow(now()->addSeconds(5));
 
-    $workload = new EvaluatedWorkload(
-        isGroup: false,
-        connection: 'sqs',
-        name: 'orders',
-        driver: 'sqs',
-        config: $config,
-        currentWorkers: 2,
-        metrics: QueueMetricsFactory::onSqs(200, 'orders'),
-        memberQueues: ['orders'],
-        slaSignal: SlaSignal::fromPickupPercentile(45.0, 95),
-    );
+    $damp = function (SlaSignal $signal, ?bool $breaching) use ($manager, $config): CooldownDecision {
+        $workload = new EvaluatedWorkload(
+            isGroup: false,
+            connection: 'sqs',
+            name: 'orders',
+            driver: 'sqs',
+            config: $config,
+            currentWorkers: 2,
+            metrics: QueueMetricsFactory::onSqs(200, 'orders'),
+            memberQueues: ['orders'],
+            slaSignal: $signal,
+        );
 
-    $decisions = (new ReflectionMethod($manager, 'dampClusterTargets'))
-        ->invoke($manager, ['queue:sqs:orders' => 8], ['queue:sqs:orders' => $workload], 16);
+        $arguments = [['queue:sqs:orders' => 8], ['queue:sqs:orders' => $workload], 16];
 
-    expect($decisions['queue:sqs:orders']->breachOverride)->toBeTrue()
-        ->and($decisions['queue:sqs:orders']->targetWorkers)->toBe(8);
+        if ($breaching !== null) {
+            $arguments[] = ['queue:sqs:orders' => $breaching];
+        }
+
+        return (new ReflectionMethod($manager, 'dampClusterTargets'))->invoke($manager, ...$arguments)['queue:sqs:orders'];
+    };
+
+    return [$manager, $damp];
+}
+
+test('the damper reports a breach override from the signal, not just the oldest age', function (): void {
+    [, $damp] = reversingLeader();
+
+    $decision = $damp(SlaSignal::fromPickupPercentile(45.0, 95), null);
+
+    expect($decision->breachOverride)->toBeTrue()
+        ->and($decision->targetWorkers)->toBe(8);
+});
+
+test('the damper overrides for a breach the leader holds through an inconclusive reading', function (): void {
+    [, $damp] = reversingLeader();
+
+    // The window drained, so the signal alone reads 0 — but the leader judged
+    // the breach still open, and that judgement is what the damper must use.
+    $decision = $damp(SlaSignal::fromOldestJobAgeFallback(0), true);
+
+    expect($decision->breachOverride)->toBeTrue()
+        ->and($decision->targetWorkers)->toBe(8);
+});
+
+test('the damper follows the leader judgement over the signal when they disagree', function (): void {
+    [, $damp] = reversingLeader();
+
+    $decision = $damp(SlaSignal::fromPickupPercentile(45.0, 95), false);
+
+    expect($decision->breachOverride)->toBeFalse()
+        ->and($decision->targetWorkers)->toBe(8);
+});
+
+test('a leader cycle holding an SQS breach through a drained window keeps overriding the damper', function (): void {
+    $this->pickups->seedRepeated(20, 45.0, 'sqs', 'orders');
+    leaderBreachDiscovery(['sqs:orders' => leaderSqsRawMetrics('orders', 200)]);
+    $manager = app(AutoscaleManager::class);
+    $cycle = new ReflectionMethod($manager, 'evaluateAndPublishClusterRecommendations');
+    $cycle->invoke($manager);
+
+    // A scale-down a moment ago, then the window drains with jobs still waiting.
+    $cooldown = (new ReflectionProperty($manager, 'cooldown'))->getValue($manager);
+    $cooldown->apply('queue:sqs:orders', 6, 2, false, 60);
+    Carbon::setTestNow(now()->addSeconds(5));
+    $this->pickups->clear('sqs', 'orders');
+    $cycle->invoke($manager);
+
+    Event::assertDispatchedTimes(SlaBreached::class, 1);
+    Event::assertNotDispatched(SlaRecovered::class);
+    expect(leaderSummaryRow($this->store, 'orders'))
+        ->sla_status->toBe('breached')
+        ->sla_signal_source->toBe('oldest_job_age_fallback');
 });
 
 test('a summary from a leader that predates SLA signals is read on the oldest job age', function (): void {
